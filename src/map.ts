@@ -9,7 +9,13 @@ import {
 } from 'maplibre-gl';
 import type { Feature, FeatureCollection, Geometry, Position } from 'geojson';
 import mapLibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url';
-import { boundsFromPositions, clampCenterToBounds, getMapPadding, type CenterBounds } from './map-camera';
+import {
+  boundsFromPositions,
+  clampCenterToBounds,
+  getMapPadding,
+  removeTranslationFromRect,
+  type CenterBounds,
+} from './map-camera';
 
 export type Dataset = FeatureCollection<Geometry, Record<string, string | number>>;
 
@@ -323,9 +329,12 @@ export class MapController {
   }
 
   private getCameraPadding() {
+    const panelRect = this.panel.getBoundingClientRect();
+    const transform = getComputedStyle(this.panel).transform;
+    const matrix = transform === 'none' ? undefined : new DOMMatrixReadOnly(transform);
     return getMapPadding(
       this.map.getContainer().getBoundingClientRect(),
-      this.panel.getBoundingClientRect(),
+      removeTranslationFromRect(panelRect, matrix?.m41 ?? 0, matrix?.m42 ?? 0),
       this.panel.classList.contains('is-open'),
       window.matchMedia('(max-width: 640px)').matches,
     );
@@ -394,7 +403,14 @@ export class MapController {
     try {
       this.map.resize();
       if (refitOverview) this.fitOverviewBounds();
-      else this.map.setPadding(this.getCameraPadding());
+      else {
+        const padding = this.getCameraPadding();
+        const current = this.map.getPadding();
+        if (padding.top !== current.top || padding.right !== current.right
+          || padding.bottom !== current.bottom || padding.left !== current.left) {
+          this.map.setPadding(padding);
+        }
+      }
     } finally {
       this.applyingLayout = false;
     }
@@ -421,7 +437,7 @@ export class MapController {
     this.map.easeTo({
       center: coordinate as LngLatLike,
       zoom: Math.max(this.map.getZoom(), selection.kind === 'station' ? 12.3 : 11.2),
-      offset: [window.innerWidth > 640 ? -175 : 0, window.innerWidth <= 640 ? -Math.round(window.innerHeight * 0.19) : 0],
+      padding: this.getCameraPadding(),
       duration: initial ? 0 : 850,
       essential: true,
     });

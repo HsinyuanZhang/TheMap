@@ -21,6 +21,15 @@ export interface MapPadding {
   left: number;
 }
 
+export function removeTranslationFromRect(rect: MapRect, x: number, y: number): MapRect {
+  return {
+    top: rect.top - y,
+    right: rect.right - x,
+    bottom: rect.bottom - y,
+    left: rect.left - x,
+  };
+}
+
 export function clampCenterToBounds(
   center: { lng: number; lat: number },
   bounds: CenterBounds,
