@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#eef2f3" />
+    <meta name="description" content="可缩放、可点击的摩纳哥地图。" />
+    <link rel="icon" type="image/svg+xml" href="/icons/favicon.svg" />
+    <title>摩纳哥地图</title>
+  </head>
+  <body>
+    <div id="app">
+      <main class="map-shell" aria-label="摩纳哥地图">
+        <div id="map" class="map-canvas" aria-label="可缩放、可平移和倾斜的交互地图"></div>
+        <div id="map-error" class="map-error" role="alert" hidden></div>
+
+        <header class="map-toolbar">
+          <a class="brand" href="/" aria-label="返回地图首页">
+            <span class="brand-mark" aria-hidden="true">M</span>
+            <span>摩纳哥地图</span>
+          </a>
+          <div class="toolbar-actions" aria-label="地图视图控制">
+            <button id="zoom-out" class="control-button compact" type="button" aria-label="缩小地图">−</button>
+            <button id="zoom-in" class="control-button compact" type="button" aria-label="放大地图">＋</button>
+            <button id="north-up" class="control-button north-button" type="button" aria-label="恢复北向上">北向上</button>
+            <button id="view-toggle" class="control-button" type="button" aria-pressed="false">切换到 3D</button>
+          </div>
+        </header>
+
+        <nav class="layer-toolbar" aria-label="地图图层">
+          <label><input type="checkbox" data-layer-toggle="metro" checked /> 地铁</label>
+          <label><input type="checkbox" data-layer-toggle="roads" checked /> 公路</label>
+          <label><input type="checkbox" data-layer-toggle="buildings" checked /> 建筑</label>
+          <label><input type="checkbox" data-layer-toggle="places" checked /> 地点</label>
+        </nav>
+
+        <aside id="place-panel" class="place-panel is-open" aria-label="地点介绍" aria-live="polite">
+          <div class="panel-grabber" aria-hidden="true"></div>
+          <div class="panel-header">
+            <div class="panel-heading">
+              <p id="panel-kicker" class="panel-kicker">城市简介</p>
+              <h1 id="panel-title">摩纳哥</h1>
+            </div>
+            <button id="close-panel" class="icon-button" type="button" aria-label="关闭介绍面板">×</button>
+          </div>
+          <div id="panel-meta" class="panel-meta" hidden></div>
+          <div id="station-meta" class="station-meta" hidden></div>
+          <div id="panel-body" class="panel-body"></div>
+          <div id="share-area" class="share-area" hidden>
+            <label for="share-link">分享链接</label>
+            <div class="share-row">
+              <input id="share-link" type="url" readonly />
+              <button id="copy-link" class="control-button secondary" type="button">复制</button>
+            </div>
+            <p id="copy-status" class="copy-status" aria-live="polite"></p>
+          </div>
+        </aside>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
