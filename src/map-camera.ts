@@ -24,6 +24,10 @@ export interface MapPadding {
 export const mapCameraLimits = { minZoom: 7.2, maxZoom: 18, maxPitch: 80, defaultPitch: 60 } as const;
 export const initialMapCamera = { pitch: 0, bearing: 0 } as const;
 
+export function shouldFitOverviewForDataset(name: string, isOverview: boolean): boolean {
+  return name === 'land' && isOverview;
+}
+
 export function pointFocusZoom(currentZoom: number, minimumZoom: number): number {
   return Math.max(currentZoom, minimumZoom);
 }

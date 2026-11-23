@@ -10,6 +10,7 @@ import {
   mobileScaleOffset,
   pointFocusZoom,
   removeTranslationFromRect,
+  shouldFitOverviewForDataset,
   threeDimensionalView,
 } from '../src/map-camera';
 
@@ -99,6 +100,12 @@ test('3D camera uses the low-zoom tower preset and preserves close-view bearing'
     preset: false, center: [-149.8, 40.2], zoom: 15, pitch: 60, bearing: 24,
   });
   assert.deepEqual(mapCameraLimits, { minZoom: 7.2, maxZoom: 18, maxPitch: 80, defaultPitch: 60 });
+});
+
+test('land data refits only while the camera remains in the initial overview', () => {
+  assert.equal(shouldFitOverviewForDataset('land', true), true);
+  assert.equal(shouldFitOverviewForDataset('land', false), false);
+  assert.equal(shouldFitOverviewForDataset('buildings', true), false);
 });
 
 test('mobile scale control moves above the visible bottom sheet height', () => {

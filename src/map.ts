@@ -23,6 +23,7 @@ import {
   mobileScaleOffset,
   pointFocusZoom,
   removeTranslationFromRect,
+  shouldFitOverviewForDataset,
   threeDimensionalView,
   type CenterBounds,
 } from './map-camera';
@@ -270,6 +271,7 @@ export class MapController {
   }
 
   setDataset(name: DatasetName, data: Dataset): void {
+    const shouldRefitOverview = shouldFitOverviewForDataset(name, this.isOverview);
     this.datasets[name] = data;
     const source = this.map.getSource(name) as GeoJSONSource | undefined;
     source?.setData(data);
@@ -277,7 +279,7 @@ export class MapController {
     if (name === 'pois' || name === 'metro_stations') {
       (this.map.getSource('annotations') as GeoJSONSource | undefined)?.setData(createPointAnnotations(this.datasets));
     }
-    if (name === 'land' && this.isOverview && this.map.isStyleLoaded()) this.fitInitialBounds();
+    if (shouldRefitOverview) this.fitInitialBounds();
   }
 
   setSelectedId(id: string | undefined): void {
