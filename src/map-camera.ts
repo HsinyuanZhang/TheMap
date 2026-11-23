@@ -21,6 +21,48 @@ export interface MapPadding {
   left: number;
 }
 
+export const mapCameraLimits = { minZoom: 7.2, maxZoom: 18, maxPitch: 80, defaultPitch: 60 } as const;
+export const initialMapCamera = { pitch: 0, bearing: 0 } as const;
+
+export function pointFocusZoom(currentZoom: number, minimumZoom: number): number {
+  return Math.max(currentZoom, minimumZoom);
+}
+
+export function geometryFocusZoom(currentZoom: number, fitZoom: number, maxZoom = 15): number {
+  return Math.max(currentZoom, Math.min(maxZoom, fitZoom));
+}
+
+export interface ThreeDimensionalView {
+  preset: boolean;
+  center: [number, number];
+  zoom: number;
+  pitch: number;
+  bearing: number;
+}
+
+export function threeDimensionalView(
+  zoom: number,
+  center: [number, number],
+  bearing: number,
+  continentalCenter?: [number, number],
+): ThreeDimensionalView {
+  if (zoom < 13 && continentalCenter) {
+    return { preset: true, center: continentalCenter, zoom: 15, pitch: 72, bearing: -18 };
+  }
+  return { preset: false, center, zoom, pitch: mapCameraLimits.defaultPitch, bearing };
+}
+
+export function mobileScaleOffset(
+  mapRect: MapRect,
+  panelRect: MapRect,
+  panelOpen: boolean,
+  mobile: boolean,
+): number {
+  if (!mobile || !panelOpen) return 0;
+  const overlap = Math.max(0, mapRect.bottom - Math.max(mapRect.top, panelRect.top));
+  return Math.ceil(overlap + 22);
+}
+
 export function removeTranslationFromRect(rect: MapRect, x: number, y: number): MapRect {
   return {
     top: rect.top - y,

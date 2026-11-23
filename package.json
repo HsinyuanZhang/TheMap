@@ -8,7 +8,7 @@
     "build:data": "tsx data/build.ts",
     "validate": "tsx scripts/validate.ts",
     "typecheck": "tsc --noEmit",
-    "build": "npm run build:data && npm run validate && npm run typecheck && vite build && npm run verify:build",
+    "build": "npm run build:data && npm run validate && npm test && npm run typecheck && vite build && npm run verify:build",
     "verify:build": "node scripts/verify-build.mjs",
     "preview": "vite preview --host 0.0.0.0",
     "test": "node --test --import tsx tests/*.test.ts",

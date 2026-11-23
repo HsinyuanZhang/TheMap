@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { getStationInfo } from '../src/station-info';
 import type { MapDatasets } from '../src/map';
 import { districts, land, points, roads, stations, transitLines } from '../data/source';
+import { closeRing, curvedBoundary, distanceToSegment, reversePath, samePoint } from '../data/geometry';
 
 const transitFixture = JSON.parse(await readFile(new URL('./transit.fixture.json', import.meta.url), 'utf8')) as Record<string, {
   color: string;
@@ -30,14 +31,37 @@ test('the kilometer source keeps district coverage, named arterial count, and hi
   assert.equal(land.filter((feature) => feature.kind !== 'monaco').length, 2);
   assert.equal(new Set(points.map((point) => point.id)).size, points.length);
   assert.deepEqual(roads.filter((road) => road.roadClass === 'arterial').map((road) => road.id), [
-    'fifth-avenue', 'broadway', 'queens-road', 'wall-street',
+    'fifth-avenue', 'broadway', 'queens-road', 'wall-street', 'promenade',
   ]);
   const highwayById = new Map(roads.filter((road) => road.roadClass === 'motorway').map((road) => [road.id, road]));
-  assert.deepEqual(highwayById.get('A1')?.coordinates.slice(-2), [[13, 34], [13, 36]]);
-  assert.deepEqual(highwayById.get('A2')?.coordinates.slice(-2), [[36, 4], [41, 4]]);
+  assert.deepEqual(highwayById.get('A1')?.coordinates[0], [3.2, 3.4555]);
+  assert.deepEqual(highwayById.get('A2')?.coordinates[0], [7.7, 3.465]);
   assert.deepEqual(highwayById.get('A3')?.coordinates[0], [8, 21]);
   assert.deepEqual(highwayById.get('A3')?.coordinates.at(-1), [36, 4]);
+  assert.deepEqual(highwayById.get('A1')?.coordinates[4], highwayById.get('A3')?.coordinates[0]);
+  assert.deepEqual(highwayById.get('A2')?.coordinates.at(-2), highwayById.get('A3')?.coordinates.at(-1));
   assert.deepEqual(points.find((point) => point.id === 'strait-exchange')?.position, [0, 0]);
+});
+
+test('shared boundary helpers preserve coast endpoints and reverse internal edges exactly', () => {
+  const path = curvedBoundary([0, 0], [4, 0], 0.5, 0.7, 6);
+  assert.equal(path.length, 6);
+  assert.ok(samePoint(path[0]!, [0, 0]));
+  assert.ok(samePoint(path.at(-1)!, [4, 0]));
+  assert.deepEqual(reversePath(path).reverse(), path);
+  assert.deepEqual(closeRing([[0, 0], [1, 0], [1, 1]]).at(-1), [0, 0]);
+  assert.ok(distanceToSegment([2, 0.5], [0, 0], [4, 0]) <= 0.5);
+});
+
+test('moved Manhattan stations stay within 300 meters of their Appendix positions', async () => {
+  const fixture = JSON.parse(await readFile(new URL('./phase1-geometry.fixture.json', import.meta.url), 'utf8')) as {
+    stationsKm: Record<string, [number, number]>;
+  };
+  for (const station of stations.filter((item) => item.district === '曼哈顿区')) {
+    const original = fixture.stationsKm[station.id];
+    assert.ok(original, 'the original station position must be fixture-backed');
+    assert.ok(Math.hypot(station.position[0] - original[0], station.position[1] - original[1]) <= 0.3);
+  }
 });
 
 test('station metadata includes adjacent stops, transfers, terminal stops, and missing IDs', () => {

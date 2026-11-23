@@ -20,19 +20,21 @@ npm test
 npm run build
 ```
 
-构建产物位于 `dist/`。`npm run build` 会生成 GeoJSON、运行校验、执行 TypeScript 检查，再运行 Vite 构建。
+构建产物位于 `dist/`。`npm run build` 会生成 GeoJSON、运行校验与自动化测试、执行 TypeScript 检查，再运行 Vite 构建。
 
 ## 地图数据
 
-`data/source.ts` 是可替换的紧凑源定义，坐标单位为公里，原点海峡交易所对应 `(-150.0, 40.0)`。运行 `npm run build:data` 会用固定种子生成 `public/data/` 中的八个 GeoJSON 文件。不要直接编辑生成文件。
+`data/source.ts` 是规范源定义，坐标单位为公里，原点海峡交易所对应 `(-150.0, 40.0)`。运行 `npm run build:data` 会用固定种子生成 `public/data/` 中的十三个 GeoJSON 文件。不要直接编辑生成文件。街区、树木、区域标签、边界和地表数据分别写入 `blocks`、`trees`、`labels`、`boundaries` 和 `surface`；地表集合包含农田、湖泊和码头。
 
-数据目前使用简化示意几何：城区范围、主要地点、公园、公路和地铁线路均可定位与点击；城区多为规则分区，海岸和港湾未细化，街区拓扑及建筑密度也未完成。后续可在源定义中替换这些几何，不需要更改地图数据格式或面板接口。
+地图由本地 MapLibre GL 样式渲染。首屏先请求陆地、行政区、公园、道路、地铁、地点、标签和边界数据；街区、楼房、树木和地表集合使用空数据源占位，在地图首次空闲后按文件延迟加载。单个文件失败会显示可重试提示，不会阻止其他图层显示。缩放层级从 7.2 的区域总览逐步显示道路、公园、街区、楼房和树木；楼房在 12 至 13 级之间长高。运行时不请求第三方地图、字体、瓦片或 API 服务。
+
+地形、海岸线和街区形态仍是虚构世界观的示意数据，不代表现实地图，也不增加新的设定文本或地点。
 
 ## 新增地点
 
 1. 在 `content/places/<id>.md` 新建文件，使用 `id`、`name`、`type`、`district` 四个 frontmatter 字段。
 2. 正文只加入经作者确认的设定文字；未知的所属区填写「待定」。
-3. 在 `data/source.ts` 的对应要素定义中使用相同 `id` 和 `name`。点位加入 `points`，公园加入 `parks`，街道加入 `roads`；行政区和邻区分别加入 `districts` 或 `land`。若地点需要地标建筑，在 `data/build.ts` 增加尺寸和高度配置，建筑位置与名称按 id 从 `points` 读取。
+3. 在 `data/source.ts` 的对应要素定义中使用相同 `id` 和 `name`。点位加入 `points`，公园加入 `parks`，街道加入 `roads`；行政区和邻区分别加入 `districts` 或 `land`。地点地标的尺寸、高度和位置配置在 `data/generate.ts` 中按点位 id 推导。
 4. 若改动了经确认的介绍文字，同时更新 `tests/content.fixture.json` 中的核对项。
 
 城区与邻区由 `districts`、`land` 定义；点位在 `points` 中定义，公园在 `parks` 中定义，道路在 `roads` 中定义。一个地点可同时对应点位和地标建筑或道路，以便在不同缩放级别点击。

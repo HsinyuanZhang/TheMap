@@ -2,40 +2,48 @@ import {
   Map as MapLibreMap,
   ScaleControl,
   setWorkerUrl,
-  type LayerSpecification,
-  type LngLatLike,
+  type GeoJSONSource,
+  type MapMouseEvent,
   type MapGeoJSONFeature,
-  type StyleSpecification,
 } from 'maplibre-gl';
-import type { Feature, FeatureCollection, Geometry, Position } from 'geojson';
+import type { Feature, Geometry, Position } from 'geojson';
 import mapLibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url';
+import type {
+  Dataset,
+  DatasetName,
+  MapDatasets,
+} from './dataset-loader';
 import {
   boundsFromPositions,
   clampCenterToBounds,
+  geometryFocusZoom,
   getMapPadding,
+  initialMapCamera,
+  mapCameraLimits,
+  mobileScaleOffset,
+  pointFocusZoom,
   removeTranslationFromRect,
+  threeDimensionalView,
   type CenterBounds,
 } from './map-camera';
+import { buildingColorExpression, createMapStyle, createPointAnnotations } from './map-style';
 
-export type Dataset = FeatureCollection<Geometry, Record<string, string | number>>;
-
-export interface MapDatasets {
-  land: Dataset;
-  districts: Dataset;
-  parks: Dataset;
-  roads: Dataset;
-  metro_lines: Dataset;
-  metro_stations: Dataset;
-  buildings: Dataset;
-  pois: Dataset;
-}
+export type { Dataset, MapDatasets } from './dataset-loader';
 
 export type MapSelection =
-  | { kind: 'place'; id: string; coordinate: [number, number] }
-  | { kind: 'station'; id: string; coordinate: [number, number] };
+  | { kind: 'place'; id: string }
+  | { kind: 'station'; id: string };
 
 type SelectionHandler = (selection: MapSelection) => void;
 type ErrorHandler = (message: string) => void;
+type LayerGroup = 'metro' | 'roads' | 'buildings' | 'places';
+
+const layerIds: Record<LayerGroup, string[]> = {
+  metro: ['metro-lines', 'transfer-stations', 'normal-stations', 'station-labels'],
+  roads: ['highway-casing', 'highways', 'arterial-casing', 'arterials', 'road-labels'],
+  buildings: ['buildings-3d', 'trees-3d'],
+  places: ['landmark-markers', 'other-place-markers', 'park-labels', 'landmark-labels', 'other-place-labels'],
+};
 
 const longitudeScale = 111.32 * Math.cos((40 * Math.PI) / 180);
 const latitudeScale = 110.574;
@@ -70,12 +78,13 @@ function positions(geometry: Geometry | null): Position[] {
   return result;
 }
 
-function centerOf(feature: Feature<Geometry, Record<string, unknown>>): [number, number] | undefined {
-  const points = positions(feature.geometry);
+function featureId(feature: MapGeoJSONFeature): string {
+  return String(feature.properties?.id ?? '');
+}
+
+function centerOf(features: readonly Feature<Geometry, Record<string, unknown>>[]): [number, number] | undefined {
+  const points = features.flatMap((feature) => positions(feature.geometry));
   if (points.length === 0) return undefined;
-  if (feature.geometry?.type === 'Point') {
-    return [points[0]![0]!, points[0]![1]!];
-  }
   const longitudes = points.map((position) => position[0]!);
   const latitudes = points.map((position) => position[1]!);
   return [
@@ -84,8 +93,9 @@ function centerOf(feature: Feature<Geometry, Record<string, unknown>>): [number,
   ];
 }
 
-function featureId(feature: MapGeoJSONFeature): string {
-  return String(feature.properties?.id ?? '');
+function findById(dataset: Dataset, id: string): Feature<Geometry, Record<string, unknown>>[] {
+  return dataset.features.filter((feature) => String(feature.properties?.id ?? '') === id) as
+    Feature<Geometry, Record<string, unknown>>[];
 }
 
 function setVisibility(map: MapLibreMap, layerIds: string[], visible: boolean): void {
@@ -102,9 +112,16 @@ export class MapController {
   private readonly onError: ErrorHandler;
   private readonly datasets: MapDatasets;
   private readonly panel: HTMLElement;
+  private readonly layerVisibility: Record<LayerGroup, boolean> = {
+    metro: true,
+    roads: true,
+    buildings: true,
+    places: true,
+  };
   private applyingLayout = false;
   private constrainingCenter = false;
   private isOverview = true;
+  private selectedId: string | undefined;
 
   constructor(
     container: HTMLElement,
@@ -119,20 +136,16 @@ export class MapController {
     this.onSelection = onSelection;
     this.onError = onError;
     this.panel = panel;
-    const style: StyleSpecification = {
-      version: 8,
-      glyphs: `${import.meta.env.BASE_URL}fonts/{fontstack}/{range}.pbf`,
-      sources: {},
-      layers: [{ id: 'ocean', type: 'background', paint: { 'background-color': '#dce8eb' } }],
-    };
-
     this.map = new MapLibreMap({
       container,
-      style,
+      style: createMapStyle(import.meta.env.BASE_URL, datasets),
       center: [-149.8, 40.17],
       zoom: 8.4,
-      minZoom: 7.2,
-      maxZoom: 17,
+      pitch: initialMapCamera.pitch,
+      bearing: initialMapCamera.bearing,
+      minZoom: mapCameraLimits.minZoom,
+      maxZoom: mapCameraLimits.maxZoom,
+      maxPitch: mapCameraLimits.maxPitch,
       localIdeographFontFamily: 'sans-serif',
       dragRotate: true,
       touchPitch: true,
@@ -147,14 +160,15 @@ export class MapController {
     this.ready = new Promise((resolve) => {
       this.map.once('load', () => {
         try {
-          this.addSourcesAndLayers();
-          this.fitInitialBounds();
           this.installHitTesting();
-          resolve();
+          this.applyLayerVisibility();
+          this.setSelectedId(this.selectedId);
+          this.fitInitialBounds();
+          this.updateLayout();
         } catch (error) {
           this.onError(error instanceof Error ? error.message : '地图图层加载失败。');
-          resolve();
         }
+        resolve();
       });
     });
     this.map.on('error', (event) => {
@@ -163,169 +177,26 @@ export class MapController {
     });
   }
 
-  private addSourcesAndLayers(): void {
-    const sourceEntries = Object.entries(this.datasets) as [keyof MapDatasets, Dataset][];
-    for (const [id, data] of sourceEntries) this.map.addSource(id, { type: 'geojson', data });
-    const borderFeature: Feature<Geometry, Record<string, string | number>> = {
-      type: 'Feature',
-      geometry: { type: 'LineString', coordinates: [toGeographic(0, 34), toGeographic(36, 34)] },
-      properties: {},
-    };
-    this.map.addSource('north-border', {
-      type: 'geojson',
-      data: { type: 'FeatureCollection', features: [borderFeature] },
-    });
-
-    const layers: LayerSpecification[] = [
-      {
-        id: 'land-fill', type: 'fill', source: 'land',
-        paint: { 'fill-color': ['match', ['get', 'kind'], 'monaco', '#e6e5d9', 'ottoman', '#e3dfd2', 'east-region', '#e5e3d8', '#e9e8df'], 'fill-opacity': 0.94 },
-      } as LayerSpecification,
-      {
-        id: 'land-outline', type: 'line', source: 'land',
-        paint: { 'line-color': '#879b9b', 'line-width': 1.2, 'line-opacity': 0.75 },
-      } as LayerSpecification,
-      {
-        id: 'district-fill', type: 'fill', source: 'districts',
-        paint: { 'fill-color': ['match', ['get', 'kind'], 'urban', '#eadfce', 'military', '#d7dfdb', 'reserve', '#dfe8d7', '#e8e1d6'], 'fill-opacity': 0.88 },
-      } as LayerSpecification,
-      {
-        id: 'district-boundaries', type: 'line', source: 'districts',
-        paint: { 'line-color': '#a4aaa0', 'line-width': 1.15, 'line-opacity': 0.9 },
-      } as LayerSpecification,
-      {
-        id: 'north-border', type: 'line', source: 'north-border',
-        paint: { 'line-color': '#526e73', 'line-width': 3, 'line-dasharray': [2, 1.3] },
-      } as LayerSpecification,
-      {
-        id: 'parks-fill', type: 'fill', source: 'parks',
-        paint: { 'fill-color': '#b8d7bd', 'fill-opacity': 0.96 },
-      } as LayerSpecification,
-      {
-        id: 'parks-outline', type: 'line', source: 'parks',
-        paint: { 'line-color': '#7ba889', 'line-width': 1.2 },
-      } as LayerSpecification,
-      {
-        id: 'road-casing', type: 'line', source: 'roads',
-        filter: ['any', ['==', ['get', 'class'], 'motorway'], ['==', ['get', 'class'], 'arterial']],
-        paint: {
-          'line-color': '#fffdf8',
-          'line-width': ['match', ['get', 'class'], 'motorway', 7, 'arterial', 4.3, 2],
-          'line-opacity': 0.97,
-        },
-      } as LayerSpecification,
-      {
-        id: 'roads-main', type: 'line', source: 'roads',
-        filter: ['any', ['==', ['get', 'class'], 'motorway'], ['==', ['get', 'class'], 'arterial']],
-        paint: {
-          'line-color': ['match', ['get', 'class'], 'motorway', '#bd8260', 'arterial', '#d0ad82', '#d4c8b2'],
-          'line-width': ['match', ['get', 'class'], 'motorway', 4.2, 'arterial', 2.4, 1],
-          'line-opacity': 0.94,
-        },
-      } as LayerSpecification,
-      {
-        id: 'streets', type: 'line', source: 'roads', minzoom: 13,
-        filter: ['==', ['get', 'class'], 'street'],
-        paint: { 'line-color': '#fffdf8', 'line-width': 1.35, 'line-opacity': 0.92 },
-      } as LayerSpecification,
-      {
-        id: 'metro-lines', type: 'line', source: 'metro_lines',
-        paint: { 'line-color': ['get', 'color'], 'line-width': 3.2, 'line-opacity': 0.93 },
-      } as LayerSpecification,
-      {
-        id: 'buildings-3d', type: 'fill-extrusion', source: 'buildings', minzoom: 13,
-        paint: {
-          'fill-extrusion-color': ['match', ['get', 'id'], 'continental-tower', '#b56b48', '#899da0'],
-          'fill-extrusion-height': ['get', 'height'],
-          'fill-extrusion-base': 0,
-          'fill-extrusion-opacity': 0.93,
-          'fill-extrusion-vertical-gradient': true,
-        },
-      } as LayerSpecification,
-      {
-        id: 'metro-stations', type: 'circle', source: 'metro_stations',
-        paint: {
-          'circle-radius': ['case', ['==', ['get', 'transfer'], 1], 8, 5.3],
-          'circle-color': '#fffefa',
-          'circle-stroke-color': ['case', ['==', ['get', 'transfer'], 1], '#183d4b', '#536d72'],
-          'circle-stroke-width': ['case', ['==', ['get', 'transfer'], 1], 3.3, 2.2],
-        },
-      } as LayerSpecification,
-      {
-        id: 'poi-markers', type: 'circle', source: 'pois',
-        paint: {
-          'circle-radius': ['match', ['get', 'category'], '地标', 6.3, '口岸', 5.8, 4.5],
-          'circle-color': ['match', ['get', 'category'], '地标', '#a85e3f', '口岸', '#49656b', '#ffffff'],
-          'circle-stroke-color': '#fffefa',
-          'circle-stroke-width': 1.8,
-        },
-      } as LayerSpecification,
-      {
-        id: 'district-labels', type: 'symbol', source: 'districts', minzoom: 7.7,
-        layout: {
-          'text-field': ['get', 'name'],
-          'text-font': ['DejaVu Sans'],
-          'text-size': ['interpolate', ['linear'], ['zoom'], 7.7, 11, 10, 14],
-          'text-allow-overlap': false,
-          'text-ignore-placement': false,
-        },
-        paint: { 'text-color': '#53645d', 'text-halo-color': '#f7f7ef', 'text-halo-width': 1.4 },
-      } as LayerSpecification,
-      {
-        id: 'neighbor-labels', type: 'symbol', source: 'land', minzoom: 7.7,
-        filter: ['has', 'name'],
-        layout: {
-          'text-field': ['get', 'name'],
-          'text-font': ['DejaVu Sans'],
-          'text-size': 14,
-          'text-allow-overlap': false,
-        },
-        paint: { 'text-color': '#70796f', 'text-halo-color': '#f2f0e7', 'text-halo-width': 1.4 },
-      } as LayerSpecification,
-      {
-        id: 'park-labels', type: 'symbol', source: 'parks', minzoom: 9.5,
-        layout: { 'text-field': ['get', 'name'], 'text-font': ['DejaVu Sans'], 'text-size': 11, 'text-allow-overlap': false },
-        paint: { 'text-color': '#42694b', 'text-halo-color': '#edf5eb', 'text-halo-width': 1.2 },
-      } as LayerSpecification,
-      {
-        id: 'station-labels', type: 'symbol', source: 'metro_stations', minzoom: 9.3,
-        layout: { 'text-field': ['get', 'name'], 'text-font': ['DejaVu Sans'], 'text-size': 11, 'text-offset': [0, 1.2], 'text-anchor': 'top', 'text-allow-overlap': false },
-        paint: { 'text-color': '#2d4b55', 'text-halo-color': '#fff', 'text-halo-width': 1.3 },
-      } as LayerSpecification,
-      {
-        id: 'poi-labels', type: 'symbol', source: 'pois', minzoom: 10,
-        layout: { 'text-field': ['get', 'name'], 'text-font': ['DejaVu Sans'], 'text-size': 11, 'text-offset': [0, 1.15], 'text-anchor': 'top', 'text-allow-overlap': false },
-        paint: { 'text-color': '#344b51', 'text-halo-color': '#fff', 'text-halo-width': 1.2 },
-      } as LayerSpecification,
-      {
-        id: 'road-labels', type: 'symbol', source: 'roads', minzoom: 12,
-        filter: ['all', ['==', ['get', 'class'], 'arterial'], ['!=', ['get', 'name'], '']],
-        layout: { 'symbol-placement': 'line', 'text-field': ['get', 'name'], 'text-font': ['DejaVu Sans'], 'text-size': 10, 'text-allow-overlap': false },
-        paint: { 'text-color': '#8c684c', 'text-halo-color': '#fffdf8', 'text-halo-width': 1.2 },
-      } as LayerSpecification,
-    ];
-
-    for (const layer of layers) this.map.addLayer(layer);
-  }
-
-  private fitInitialBounds(): void {
+  private fitInitialBounds(): boolean {
+    const geometry = this.datasets.land.features.flatMap((feature) => positions(feature.geometry))
+      .filter((position) => Number.isFinite(position[0]) && Number.isFinite(position[1]));
+    if (geometry.length === 0) {
+      this.isOverview = true;
+      return false;
+    }
+    const wasApplyingLayout = this.applyingLayout;
     this.applyingLayout = true;
     try {
-      this.fitOverviewBounds();
+      this.map.fitBounds(boundsFromPositions(geometry), {
+        padding: this.getCameraPadding(),
+        absolutePadding: true,
+        duration: 0,
+      });
+      this.isOverview = true;
+      return true;
     } finally {
-      this.applyingLayout = false;
+      this.applyingLayout = wasApplyingLayout;
     }
-  }
-
-  private fitOverviewBounds(): void {
-    const geometry = [...this.datasets.districts.features, ...this.datasets.land.features]
-      .flatMap((feature) => positions(feature.geometry));
-    this.map.fitBounds(boundsFromPositions(geometry), {
-      padding: this.getCameraPadding(),
-      absolutePadding: true,
-      duration: 0,
-    });
-    this.isOverview = true;
   }
 
   private getCameraPadding() {
@@ -337,6 +208,24 @@ export class MapController {
       removeTranslationFromRect(panelRect, matrix?.m41 ?? 0, matrix?.m42 ?? 0),
       this.panel.classList.contains('is-open'),
       window.matchMedia('(max-width: 640px)').matches,
+    );
+  }
+
+  private updateScaleControl(): void {
+    const container = this.map.getContainer();
+    const mobile = window.matchMedia('(max-width: 640px)').matches;
+    if (!mobile || !this.panel.classList.contains('is-open')) {
+      container.style.setProperty('--mobile-scale-offset', '0px');
+      return;
+    }
+    const mapRect = container.getBoundingClientRect();
+    const panelRect = this.panel.getBoundingClientRect();
+    const transform = getComputedStyle(this.panel).transform;
+    const matrix = transform === 'none' ? undefined : new DOMMatrixReadOnly(transform);
+    const visiblePanel = removeTranslationFromRect(panelRect, matrix?.m41 ?? 0, matrix?.m42 ?? 0);
+    container.style.setProperty(
+      '--mobile-scale-offset',
+      mobileScaleOffset(mapRect, visiblePanel, true, true) + 'px',
     );
   }
 
@@ -357,44 +246,56 @@ export class MapController {
 
   private installHitTesting(): void {
     const clickableLayers = [
-      'metro-stations',
-      'poi-markers',
-      'buildings-3d',
-      'parks-fill',
-      'roads-main',
-      'district-fill',
-      'land-fill',
+      'transfer-stations', 'normal-stations', 'landmark-markers', 'other-place-markers',
+      'buildings-3d', 'parks-fill', 'arterials', 'highways', 'district-fill', 'land-fill',
     ];
-    this.map.on('click', (event) => {
+    const findClickable = (point: MapMouseEvent['point']): { kind: MapSelection['kind']; id: string } | undefined => {
       for (const layerId of clickableLayers) {
-        const rendered = this.map.queryRenderedFeatures(event.point, { layers: [layerId] });
-        const feature = rendered.find((candidate) => layerId === 'metro-stations' || this.contentIds.has(featureId(candidate)));
-        if (!feature) continue;
-        const id = featureId(feature);
-        const coordinate: [number, number] = [event.lngLat.lng, event.lngLat.lat];
-        if (layerId === 'metro-stations') {
-          this.onSelection({ kind: 'station', id, coordinate });
-          return;
-        }
-        this.onSelection({ kind: 'place', id, coordinate });
-        return;
+        const rendered = this.map.queryRenderedFeatures(point, { layers: [layerId] });
+        const feature = rendered.find((candidate) => {
+          const id = featureId(candidate);
+          return id && (layerId.includes('station') || this.contentIds.has(id));
+        });
+        if (feature) return { kind: layerId.includes('station') ? 'station' : 'place', id: featureId(feature) };
       }
+      return undefined;
+    };
+    this.map.on('click', (event) => {
+      const selection = findClickable(event.point);
+      if (selection) this.onSelection(selection);
     });
     this.map.on('mousemove', (event) => {
-      const clickable = clickableLayers.some((layerId) => this.map.queryRenderedFeatures(event.point, { layers: [layerId] })
-        .some((feature) => layerId === 'metro-stations' || this.contentIds.has(featureId(feature))));
-      this.map.getCanvas().style.cursor = clickable ? 'pointer' : '';
+      this.map.getCanvas().style.cursor = findClickable(event.point) ? 'pointer' : '';
     });
   }
 
-  setLayerVisible(group: 'metro' | 'roads' | 'buildings' | 'places', visible: boolean): void {
-    const layers: Record<typeof group, string[]> = {
-      metro: ['metro-lines', 'metro-stations', 'station-labels'],
-      roads: ['road-casing', 'roads-main', 'streets', 'road-labels'],
-      buildings: ['buildings-3d'],
-      places: ['poi-markers', 'poi-labels'],
-    };
-    setVisibility(this.map, layers[group], visible);
+  setDataset(name: DatasetName, data: Dataset): void {
+    this.datasets[name] = data;
+    const source = this.map.getSource(name) as GeoJSONSource | undefined;
+    source?.setData(data);
+    if (name === 'buildings' && this.selectedId) this.setSelectedId(this.selectedId);
+    if (name === 'pois' || name === 'metro_stations') {
+      (this.map.getSource('annotations') as GeoJSONSource | undefined)?.setData(createPointAnnotations(this.datasets));
+    }
+    if (name === 'land' && this.isOverview && this.map.isStyleLoaded()) this.fitInitialBounds();
+  }
+
+  setSelectedId(id: string | undefined): void {
+    this.selectedId = id;
+    if (this.map.getLayer('buildings-3d')) {
+      this.map.setPaintProperty('buildings-3d', 'fill-extrusion-color', buildingColorExpression(id));
+    }
+  }
+
+  setLayerVisible(group: LayerGroup, visible: boolean): void {
+    this.layerVisibility[group] = visible;
+    setVisibility(this.map, layerIds[group], visible);
+  }
+
+  private applyLayerVisibility(): void {
+    for (const group of Object.keys(layerIds) as LayerGroup[]) {
+      setVisibility(this.map, layerIds[group], this.layerVisibility[group]);
+    }
   }
 
   updateLayout(): void {
@@ -402,8 +303,8 @@ export class MapController {
     this.applyingLayout = true;
     try {
       this.map.resize();
-      if (refitOverview) this.fitOverviewBounds();
-      else {
+      this.updateScaleControl();
+      if (!refitOverview || !this.fitInitialBounds()) {
         const padding = this.getCameraPadding();
         const current = this.map.getPadding();
         if (padding.top !== current.top || padding.right !== current.right
@@ -418,7 +319,34 @@ export class MapController {
 
   setThreeDimensional(enabled: boolean): void {
     this.isOverview = false;
-    this.map.easeTo({ pitch: enabled ? 55 : 0, duration: 650 });
+    if (!enabled) {
+      this.map.easeTo({ pitch: 0, bearing: 0, padding: this.getCameraPadding(), duration: 650 });
+      return;
+    }
+    const target = this.datasets.pois.features.find((feature) => feature.properties?.id === 'continental-tower');
+    const continentalCenter = target?.geometry.type === 'Point'
+      ? target.geometry.coordinates as [number, number]
+      : undefined;
+    const center = this.map.getCenter();
+    const view = threeDimensionalView(
+      this.map.getZoom(),
+      [center.lng, center.lat],
+      this.map.getBearing(),
+      continentalCenter,
+    );
+    if (view.preset) {
+      this.map.flyTo({
+        center: view.center,
+        zoom: view.zoom,
+        pitch: view.pitch,
+        bearing: view.bearing,
+        padding: this.getCameraPadding(),
+        duration: 1500,
+        essential: true,
+      });
+    } else {
+      this.map.easeTo({ pitch: view.pitch, padding: this.getCameraPadding(), duration: 650 });
+    }
   }
 
   zoomBy(delta: number): void {
@@ -432,39 +360,68 @@ export class MapController {
   }
 
   focus(selection: MapSelection, initial = false): void {
-    this.isOverview = false;
-    const coordinate = selection.coordinate;
-    this.map.easeTo({
-      center: coordinate as LngLatLike,
-      zoom: Math.max(this.map.getZoom(), selection.kind === 'station' ? 12.3 : 11.2),
-      padding: this.getCameraPadding(),
-      duration: initial ? 0 : 850,
-      essential: true,
-    });
+    if (selection.kind === 'station') this.focusStation(selection.id, initial);
+    else this.focusPlace(selection.id, initial);
   }
 
   focusPlace(id: string, initial = false): void {
-    const collectionOrder: Dataset[] = [
-      this.datasets.pois,
-      this.datasets.parks,
-      this.datasets.roads,
-      this.datasets.buildings,
-      this.datasets.districts,
-      this.datasets.land,
-    ];
-    for (const dataset of collectionOrder) {
-      const found = dataset.features.find((feature) => String(feature.properties?.id ?? '') === id);
-      const center = found ? centerOf(found as Feature<Geometry, Record<string, unknown>>) : undefined;
-      if (center) {
-        this.focus({ kind: 'place', id, coordinate: center }, initial);
+    const duration = initial ? 0 : 850;
+    const padding = this.getCameraPadding();
+    const region = [...findById(this.datasets.districts, id), ...findById(this.datasets.land, id)];
+    if (region.length > 0) {
+      this.isOverview = false;
+      this.map.fitBounds(boundsFromPositions(region.flatMap((feature) => positions(feature.geometry))), {
+        padding, absolutePadding: true, duration, essential: true,
+      });
+      return;
+    }
+    const park = findById(this.datasets.parks, id);
+    const road = findById(this.datasets.roads, id);
+    const geometry = park.length > 0 ? park : road;
+    if (geometry.length > 0) {
+      const points = geometry.flatMap((feature) => positions(feature.geometry));
+      const bounds = boundsFromPositions(points);
+      const fit = this.map.cameraForBounds(bounds, { padding, maxZoom: 15 });
+      const center = centerOf(geometry);
+      if (fit && center) {
+        this.isOverview = false;
+        this.map.easeTo({
+          center,
+          zoom: geometryFocusZoom(this.map.getZoom(), fit.zoom ?? 15),
+          padding,
+          duration,
+          essential: true,
+        });
         return;
       }
+    }
+    const point = findById(this.datasets.pois, id);
+    const center = centerOf(point);
+    if (center) {
+      this.isOverview = false;
+      this.map.easeTo({
+        center,
+        zoom: pointFocusZoom(this.map.getZoom(), 15),
+        padding,
+        duration,
+        essential: true,
+      });
     }
   }
 
   focusStation(id: string, initial = false): void {
-    const found = this.datasets.metro_stations.features.find((feature) => String(feature.properties?.id ?? '') === id);
-    const center = found ? centerOf(found as Feature<Geometry, Record<string, unknown>>) : undefined;
-    if (center) this.focus({ kind: 'station', id, coordinate: center }, initial);
+    const station = this.datasets.metro_stations.features.find((feature) => feature.properties?.id === id);
+    const center = station?.geometry.type === 'Point'
+      ? station.geometry.coordinates as [number, number]
+      : undefined;
+    if (!center) return;
+    this.isOverview = false;
+    this.map.easeTo({
+      center,
+      zoom: pointFocusZoom(this.map.getZoom(), 14),
+      padding: this.getCameraPadding(),
+      duration: initial ? 0 : 850,
+      essential: true,
+    });
   }
 }

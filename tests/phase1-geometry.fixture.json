@@ -1,0 +1,137 @@
+{
+  "districtAreasKm2": {
+    "manhattan": 95,
+    "beverly": 243,
+    "st-germain": 128,
+    "harlem": 160,
+    "uptown": 128,
+    "brooklyn": 160,
+    "fleet-port": 117,
+    "reserve": 207
+  },
+  "pointsKm": {
+    "strait-exchange": [
+      0,
+      0
+    ],
+    "continental-tower": [
+      4.3,
+      1.45
+    ],
+    "exchange-square": [
+      7.1,
+      1.55
+    ],
+    "wall-street": [
+      0.35,
+      -0.45
+    ],
+    "queens-road": [2, 3.2],
+    "fifth-avenue": [
+      6,
+      4.2
+    ],
+    "broadway": [
+      4.5,
+      3.35
+    ],
+    "times-square": [
+      6.3,
+      5.25
+    ],
+    "midtown": [
+      7.65,
+      5.9
+    ],
+    "central-park": [
+      5.05,
+      6.25
+    ],
+    "battery-park": [
+      -1.25,
+      -1.05
+    ],
+    "promenade": [
+      2.1,
+      -0.3
+    ],
+    "star-ferry": [
+      8.1,
+      0.2
+    ],
+    "city-hall": [
+      7.1,
+      20.4
+    ],
+    "hospital": [
+      10.1,
+      21.8
+    ],
+    "library": [
+      12.6,
+      20.2
+    ],
+    "north-checkpoint": [
+      13,
+      34
+    ]
+  },
+  "stationsKm": {
+    "station-battery-park": [
+      -0.8,
+      -1.25
+    ],
+    "station-strait-exchange": [
+      0.35,
+      0.25
+    ],
+    "station-times-square": [
+      6,
+      5
+    ],
+    "station-central-park": [
+      5.8,
+      7.1
+    ],
+    "station-st-germain": [
+      8,
+      13
+    ],
+    "station-city-hall": [
+      7.45,
+      20.75
+    ],
+    "station-hospital": [
+      10.55,
+      22.1
+    ],
+    "station-continental-tower": [
+      4.65,
+      1.8
+    ],
+    "station-exchange-square": [
+      7.45,
+      1.9
+    ],
+    "station-beverly": [
+      23,
+      5
+    ],
+    "station-beverly-east": [
+      33,
+      5
+    ],
+    "station-harlem": [
+      25,
+      13
+    ],
+    "station-brooklyn": [
+      25,
+      21
+    ],
+    "station-reserve-south": [
+      23,
+      25.2
+    ]
+  }
+}

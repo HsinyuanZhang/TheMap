@@ -13,6 +13,10 @@
       <main class="map-shell" aria-label="摩纳哥地图">
         <div id="map" class="map-canvas" aria-label="可缩放、可平移和倾斜的交互地图"></div>
         <div id="map-error" class="map-error" role="alert" hidden></div>
+        <div id="map-data-notice" class="map-data-notice" role="status" aria-live="polite" hidden>
+          <span id="map-data-message"></span>
+          <button id="retry-map-data" class="control-button secondary" type="button">重试</button>
+        </div>
 
         <header class="map-toolbar">
           <a class="brand" href="/" aria-label="返回地图首页">

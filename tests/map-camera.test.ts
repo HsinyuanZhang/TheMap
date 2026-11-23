@@ -3,8 +3,14 @@ import { test } from 'node:test';
 import {
   boundsFromPositions,
   clampCenterToBounds,
+  geometryFocusZoom,
   getMapPadding,
+  initialMapCamera,
+  mapCameraLimits,
+  mobileScaleOffset,
+  pointFocusZoom,
   removeTranslationFromRect,
+  threeDimensionalView,
 } from '../src/map-camera';
 
 test('center-only bounds clamp the camera center without requiring the viewport to fit inside the ring', () => {
@@ -75,4 +81,40 @@ test('panel transition transforms do not change focus padding before or after th
   assert.deepEqual(getMapPadding(desktopMap, desktopPanel, true, false), {
     top: 136, right: 432, bottom: 32, left: 32,
   });
+});
+
+test('point and geometry focuses zoom in when needed and do not zoom out from a closer view', () => {
+  assert.equal(pointFocusZoom(12, 15), 15);
+  assert.equal(pointFocusZoom(16, 15), 16);
+  assert.equal(geometryFocusZoom(10, 17, 15), 15);
+  assert.equal(geometryFocusZoom(16, 12, 15), 16);
+});
+
+test('3D camera uses the low-zoom tower preset and preserves close-view bearing', () => {
+  assert.deepEqual(initialMapCamera, { pitch: 0, bearing: 0 });
+  assert.deepEqual(threeDimensionalView(10, [-149.8, 40.2], 0, [-149.7, 40.3]), {
+    preset: true, center: [-149.7, 40.3], zoom: 15, pitch: 72, bearing: -18,
+  });
+  assert.deepEqual(threeDimensionalView(15, [-149.8, 40.2], 24), {
+    preset: false, center: [-149.8, 40.2], zoom: 15, pitch: 60, bearing: 24,
+  });
+  assert.deepEqual(mapCameraLimits, { minZoom: 7.2, maxZoom: 18, maxPitch: 80, defaultPitch: 60 });
+});
+
+test('mobile scale control moves above the visible bottom sheet height', () => {
+  assert.equal(
+    mobileScaleOffset(
+      { top: 0, right: 390, bottom: 844, left: 0 },
+      { top: 464, right: 390, bottom: 844, left: 0 },
+      true,
+      true,
+    ),
+    402,
+  );
+  assert.equal(mobileScaleOffset(
+    { top: 0, right: 390, bottom: 844, left: 0 },
+    { top: 464, right: 390, bottom: 844, left: 0 },
+    false,
+    true,
+  ), 0);
 });
