@@ -799,6 +799,18 @@ function generateFarmAndPortSurfaces(): Feature<Polygon, Properties>[] {
     const ring = close([[x - 0.018, endY], [x + 0.018, endY], [x + 0.018, shoreY + 0.04], [x - 0.018, shoreY + 0.04]]);
     surfaces.push(feature(polygonGeometry([ring]), { kind: "pier", sector: "south-coast", palette: index % 3 }));
   }
+  const starFerry = pointById.get("star-ferry")!;
+  const starFerryX = starFerry.position[0];
+  const starFerryShoreY = coastlineYAtX(starFerryX);
+  const starFerryRing = close([
+    [starFerryX - 0.018, starFerryShoreY - 0.24],
+    [starFerryX + 0.018, starFerryShoreY - 0.24],
+    [starFerryX + 0.018, starFerryShoreY + 0.04],
+    [starFerryX - 0.018, starFerryShoreY + 0.04],
+  ]);
+  surfaces.push(feature(polygonGeometry([starFerryRing]), {
+    kind: "pier", sector: "star-ferry", id: starFerry.id, name: starFerry.name,
+  }));
   return surfaces;
 }
 

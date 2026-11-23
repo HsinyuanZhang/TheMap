@@ -411,7 +411,8 @@ export function createMapStyle(baseUrl: string, datasets: MapDatasets, selectedI
     },
   ];
   const parkLabels: LayerSpecification = {
-    id: 'park-labels', type: 'symbol', source: 'parks', minzoom: 9.5,
+    id: 'park-labels', type: 'symbol', source: 'annotations', minzoom: 9.5,
+    filter: ['all', ['==', ['get', 'annotationType'], 'place'], ['==', ['get', 'category'], '公园']],
     layout: {
       'text-field': ['get', 'name'], 'text-font': ['DejaVu Sans'], 'text-size': 11,
       'symbol-sort-key': 40, 'text-allow-overlap': false,

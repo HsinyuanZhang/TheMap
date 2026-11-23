@@ -83,6 +83,44 @@ test('rendering layers use the requested LOD and building-height expressions', (
   assert.ok(JSON.stringify(blockFill.paint?.['fill-color']).includes('zone'));
 });
 
+test('park labels use one existing point annotation per park, not polygon placement', () => {
+  const datasets = emptyMapDatasets();
+  datasets.pois.features.push(
+    {
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [0, 0] },
+      properties: { id: 'central-park', name: '中央公园', category: '公园' },
+    },
+    {
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [1, 1] },
+      properties: { id: 'battery-park', name: '炮台公园', category: '公园' },
+    },
+  );
+  const style = createMapStyle('/', datasets);
+  const parkLabels = style.layers.find((layer) => layer.id === 'park-labels');
+  assert.ok(parkLabels?.type === 'symbol');
+  assert.equal(parkLabels.source, 'annotations');
+  assert.equal(parkLabels.minzoom, 9.5);
+  assert.deepEqual(parkLabels.filter, [
+    'all',
+    ['==', ['get', 'annotationType'], 'place'],
+    ['==', ['get', 'category'], '公园'],
+  ]);
+  assert.equal(style.layers.some((layer) => layer.type === 'symbol' && layer.source === 'parks'), false);
+
+  const annotations = style.sources.annotations;
+  assert.ok(annotations?.type === 'geojson');
+  const data = annotations.data as unknown as { features: Array<{
+    geometry: { type: string };
+    properties?: Record<string, unknown>;
+  }> };
+  const parkPoints = data.features.filter((feature) =>
+    feature.properties?.annotationType === 'place' && feature.properties?.category === '公园');
+  assert.deepEqual(parkPoints.map((feature) => feature.properties?.id).sort(), ['battery-park', 'central-park']);
+  assert.ok(parkPoints.every((feature) => feature.geometry.type === 'Point'));
+});
+
 test('new LOD appearances fade from zero over half a zoom level', () => {
   const style = createMapStyle('/', emptyMapDatasets());
   const byId = new Map(style.layers.map((layer) => [layer.id, layer]));

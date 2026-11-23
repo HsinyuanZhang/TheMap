@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
-import { area, booleanIntersects, booleanValid, booleanWithin, intersect } from '@turf/turf';
+import { area, booleanIntersects, booleanPointInPolygon, booleanValid, booleanWithin, intersect, point } from '@turf/turf';
 import type { Feature, FeatureCollection, Geometry, LineString, MultiPolygon, Point, Polygon, Position } from 'geojson';
-import { districts as sourceDistricts, land as sourceLand, points as sourcePoints, roads as sourceRoads, stations as sourceStations, transitLines as sourceTransitLines } from '../data/source';
+import { coastlineYAtX, districts as sourceDistricts, land as sourceLand, points as sourcePoints, roads as sourceRoads, stations as sourceStations, transitLines as sourceTransitLines } from '../data/source';
 import { normalizeProse, parseContentDocument } from '../src/content-format';
 import { assertMarkdownCoverage, collectClickableIds } from './content-links';
 import {
@@ -71,6 +71,13 @@ function localPosition(position: Position): [number, number] {
   return [
     (position[0]! + 150) * 111.32 * Math.cos((40 * Math.PI) / 180),
     (position[1]! - 40) * 110.574,
+  ];
+}
+
+function geographicPosition([x, y]: readonly [number, number]): Position {
+  return [
+    Number((-150 + x / (111.32 * Math.cos((40 * Math.PI) / 180))).toFixed(6)),
+    Number((40 + y / 110.574).toFixed(6)),
   ];
 }
 
@@ -723,6 +730,28 @@ assert.equal(new Set(sourceTransitLines.map((line) => line.id)).size, sourceTran
 const wallStreet = roadCollection.features.find((road) => road.properties?.id === 'wall-street');
 const promenade = roadCollection.features.find((road) => road.properties?.id === 'promenade');
 assert.equal(surfaces.filter((item) => item.properties?.kind === 'pier' && item.properties?.sector === 'south-coast').length, 7);
+const starFerryPiers = surfaces.filter((item) => item.properties?.kind === 'pier' && item.properties?.sector === 'star-ferry');
+const fleetPortPiers = surfaces.filter((item) => item.properties?.kind === 'pier' && item.properties?.sector === 'fleet-port');
+assert.equal(starFerryPiers.length, 1, 'exactly one dedicated Star Ferry pier is required');
+assert.equal(fleetPortPiers.length, 8, 'Fleet Port pier count must remain unchanged');
+assert.equal(surfaces.filter((item) => item.properties?.kind === 'pier').length, 16, 'all pier polygons must be preserved');
+const sourceStarFerry = sourcePoints.find((item) => item.id === 'star-ferry');
+const generatedStarFerry = poiCollection.features.find((item) => item.properties?.id === 'star-ferry');
+assert.ok(sourceStarFerry && generatedStarFerry?.geometry?.type === 'Point');
+const starFerryFeature = starFerryPiers[0];
+assert.ok(starFerryFeature?.geometry?.type === 'Polygon');
+const starFerryPolygon = starFerryFeature as Feature<Polygon, Properties>;
+assert.equal(starFerryPolygon.properties?.id, sourceStarFerry.id);
+assert.equal(starFerryPolygon.properties?.name, sourceStarFerry.name);
+assert.ok(booleanPointInPolygon(generatedStarFerry as Feature<Point, Properties>, starFerryPolygon), 'Star Ferry pier must contain its existing POI');
+assert.ok(monaco);
+const starFerryShoreY = coastlineYAtX(sourceStarFerry.position[0]);
+const starFerryLandPoint = point(geographicPosition([sourceStarFerry.position[0], starFerryShoreY + 0.02]));
+const starFerrySeaPoint = point(geographicPosition([sourceStarFerry.position[0], starFerryShoreY - 0.02]));
+assert.ok(booleanPointInPolygon(starFerryLandPoint, monaco), 'land-side sample must lie on Monaco land');
+assert.ok(!booleanPointInPolygon(starFerrySeaPoint, monaco), 'sea-side sample must lie outside Monaco land');
+assert.ok(booleanPointInPolygon(starFerryLandPoint, starFerryPolygon), 'Star Ferry pier must reach land');
+assert.ok(booleanPointInPolygon(starFerrySeaPoint, starFerryPolygon), 'Star Ferry pier must reach the sea');
 assert.ok(Number(wallStreet?.properties?.width) >= 0.018 && Number(wallStreet?.properties?.width) <= 0.02);
 assert.equal(promenade?.properties?.width, 0.008);
 assert.ok(wallStreet && !parkCollection.features.some((park) => booleanIntersects(wallStreet, park)));
