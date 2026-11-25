@@ -31,6 +31,7 @@ import { buildingColorExpression, createMapStyle, createPointAnnotations } from 
 import { applyMapRenderState, mapRenderState } from './map-render-state';
 import { layerIds, type LayerGroup } from './map-layer-groups';
 import { createRegionalBlockPattern } from './block-patterns';
+import { deferRegionalPatternLayers, registerRegionalPatternsBeforeLayers } from './regional-pattern-layers';
 
 export type { Dataset, MapDatasets } from './dataset-loader';
 
@@ -133,9 +134,10 @@ export class MapController {
     this.onSelection = onSelection;
     this.onError = onError;
     this.panel = panel;
+    const initialStyle = deferRegionalPatternLayers(createMapStyle(import.meta.env.BASE_URL, datasets));
     this.map = new MapLibreMap({
       container,
-      style: createMapStyle(import.meta.env.BASE_URL, datasets),
+      style: initialStyle.style,
       center: [-149.8, 40.17],
       zoom: 8.4,
       pitch: initialMapCamera.pitch,
@@ -153,6 +155,9 @@ export class MapController {
       if (this.map.hasImage(id)) return;
       const image = createRegionalBlockPattern(id);
       if (image) this.map.addImage(id, image, { pixelRatio: 1 });
+    });
+    this.map.on('style.load', () => {
+      registerRegionalPatternsBeforeLayers(this.map, initialStyle.layers);
     });
     this.installCenterBounds();
     this.map.on('movestart', () => {

@@ -1014,7 +1014,11 @@ export function beverlySlopeAt(position: XY): number {
   return elevationSlope(position[0], position[1]);
 }
 
-function generateBeverlyTerrain(): { bands: Feature<Polygon, Properties>[]; contours: Feature<LineString, Properties>[] } {
+function generateBeverlyTerrain(): {
+  bands: Feature<Polygon, Properties>[];
+  contours: Feature<LineString, Properties>[];
+  contourPaths: Array<{ level: number; path: XY[] }>;
+} {
   const points: Feature<Point, { elevation: number }>[] = [];
   for (let y = 0; y <= 9.0001; y += 0.2) {
     for (let x = 9; x <= 28.0001; x += 0.2) points.push(point([x, y], { elevation: elevationAt(x, y) }));
@@ -1048,17 +1052,41 @@ function generateBeverlyTerrain(): { bands: Feature<Polygon, Properties>[]; cont
   const contours: Feature<LineString, Properties>[] = [];
   for (const source of contourSource.features) {
     const smoothed = simplify(source, { tolerance: 0.04, highQuality: true });
+    const level = Number(source.properties?.level ?? 0);
     for (const path of (smoothed.geometry as MultiLineString).coordinates) {
       const localPath = path.map(([x, y]) => [x, y] as XY);
       for (const segment of clipLineToRing(localPath, beverlyDistrict.ring)) {
         contours.push(feature(lineGeometry(segment), {
           kind: "contour",
-          level: Number(source.properties?.level ?? 0),
+          level,
         }));
       }
     }
   }
-  return { bands, contours };
+  return { bands, contours, contourPaths: generateBeverlyRoadContours() };
+}
+
+function generateBeverlyRoadContours(): Array<{ level: number; path: XY[] }> {
+  const points: Feature<Point, { elevation: number }>[] = [];
+  for (let y = 0; y <= 9.0001; y += 0.05) {
+    for (let x = 9; x <= 28.0001; x += 0.05) points.push(point([x, y], { elevation: elevationAt(x, y) }));
+  }
+  const levels = Array.from({ length: 7 }, (_, index) => (index + 1) * 40);
+  const source = isolines(featureCollection(points), levels, {
+    zProperty: "elevation",
+    breaksProperties: levels.map((level) => ({ level, kind: "contour" })),
+  });
+  const paths: Array<{ level: number; path: XY[] }> = [];
+  for (const contour of source.features) {
+    const level = Number(contour.properties?.level ?? 0);
+    for (const path of (contour.geometry as MultiLineString).coordinates) {
+      const localPath = path.map(([x, y]) => [x, y] as XY);
+      for (const segment of clipLineToRing(localPath, beverlyDistrict.ring)) {
+        if (segment.length >= 4) paths.push({ level, path: segment });
+      }
+    }
+  }
+  return paths;
 }
 
 function irregularEllipse(center: XY, radiusX: number, radiusY: number, phase: number, steps = 48): Ring {
@@ -1080,76 +1108,89 @@ function smoothLandNoise(x: number, y: number, phase: number): number {
     + 0.2 * Math.cos(y * 1.93 + x * 0.41 - phase * 0.7);
 }
 
-function forestEllipse(center: XY, radiusX: number, radiusY: number, phase: number): Ring {
+function forestEllipse(center: XY, radiusX: number, radiusY: number, phase: number, random: () => number, angleOffset = 0): Ring {
   const points: XY[] = [];
-  const fieldPhase = phase + landRand() * Math.PI * 2;
-  for (let index = 0; index < 96; index += 1) {
-    const angle = (index / 96) * Math.PI * 2;
+  const fieldPhase = phase + random() * Math.PI * 2;
+  const steps = 256;
+  for (let index = 0; index < steps; index += 1) {
+    const angle = (index / steps) * Math.PI * 2;
     const x = Math.cos(angle) * radiusX;
     const y = Math.sin(angle) * radiusY;
-    const radius = 1 + 0.065 * smoothLandNoise(center[0] + x, center[1] + y, fieldPhase);
-    points.push([center[0] + x * radius, center[1] + y * radius]);
+    const organicNoise = 0.2 * smoothLandNoise(center[0] + x, center[1] + y, fieldPhase)
+      + 0.4 * Math.sin(2 * angle + fieldPhase)
+      + 0.3 * Math.cos(3 * angle - phase)
+      + 0.1 * Math.sin(5 * angle + fieldPhase * 0.6);
+    const radius = 1 + 0.25 * organicNoise;
+    points.push([
+      center[0] + (x * Math.cos(angleOffset) - y * Math.sin(angleOffset)) * radius,
+      center[1] + (x * Math.sin(angleOffset) + y * Math.cos(angleOffset)) * radius,
+    ]);
   }
   return close(points);
 }
 
-function generateWoods(towns: readonly TownArea[]): { features: Feature<Polygon, Properties>[]; rings: Ring[] } {
+function woodlandDistrictInsets(ring: Ring): Ring[] {
+  return polygonPieces(bufferedLocalGeometry(polygonGeometry([ring]), -0.02).geometry)
+    .map((polygon) => polygon[0]!)
+    .filter((polygon) => polygon.length >= 4);
+}
+
+function generateWoods(towns: readonly TownArea[], preserveLandRandomSequence = true): { features: Feature<Polygon, Properties>[]; rings: Ring[] } {
   const woods: Feature<Polygon, Properties>[] = [];
   const rings: Ring[] = [];
-  const priorBeverlyWoods: Feature<Polygon | MultiPolygon, Properties>[] = [];
-  for (const [index, hill] of beverlyHills.entries()) {
-    const patch = forestEllipse(hill.center, 1.72, 1.82, index * 0.83);
-    for (const clipped of intersectWithRing([patch], beverlyDistrict.ring)) {
-      let fragments: Feature<Polygon | MultiPolygon, Properties>[] = [feature(localPolygonWithHoles(clipped).geometry, {})];
-      for (const obstacle of priorBeverlyWoods) {
-        fragments = fragments.flatMap((fragment) => {
-          const difference = subtractPolygon(fragment, obstacle);
-          return difference ? polygonPieces(difference.geometry).map((piece) => feature(localPolygonWithHoles(piece).geometry, {})) : [];
-        });
-      }
-      for (const fragment of fragments) {
-        for (const piece of polygonPieces(fragment.geometry)) {
-          const localPolygon = feature(localPolygonWithHoles(piece).geometry, { kind: "wood", sector: "beverly" });
-          woods.push(feature(polygonGeometry(piece), localPolygon.properties));
-          priorBeverlyWoods.push(localPolygon);
-          rings.push(piece[0]!);
-        }
+  const ringOwners: string[] = [];
+  const woodlandRand = rng(0x574f4f44);
+  const beverlyForestBoundary = woodlandDistrictInsets(beverlyDistrict.ring);
+  const beverlyPatches = [
+    { center: [10.7, 5.6] as XY, rx: 0.75, ry: 1.15, phase: 0.2, angle: -0.35 },
+    { center: [13.6, 6.6] as XY, rx: 1.2, ry: 3.3, phase: 0.8, angle: 0.12 },
+    { center: [16.3, 5.0] as XY, rx: 0.6, ry: 4.2, phase: 1.8, angle: -0.05 },
+    { center: [19.2, 6.7] as XY, rx: 1.4, ry: 2.5, phase: 2.7, angle: 0.3 },
+    { center: [22.2, 5.2] as XY, rx: 0.45, ry: 4.6, phase: 3.5, angle: 0.0 },
+    { center: [24.4, 6.6] as XY, rx: 1.12, ry: 4.2, phase: 4.3, angle: 0.0 },
+    { center: [27.0, 5.6] as XY, rx: 0.7, ry: 4.5, phase: 5.1, angle: 0.1 },
+  ];
+  for (const patchPlan of beverlyPatches) {
+    const patch = forestEllipse(patchPlan.center, patchPlan.rx, patchPlan.ry, patchPlan.phase, woodlandRand, patchPlan.angle);
+    for (const clipRing of beverlyForestBoundary) for (const clipped of intersectWithRing([patch], clipRing)) {
+      for (const piece of polygonPieces(localPolygonWithHoles(clipped).geometry)) {
+        if (rings.some((ring) => !disjoint(piece[0]!, ring))) throw new Error("Beverly woods must not overlap.");
+        const localPolygon = feature(localPolygonWithHoles(piece).geometry, { kind: "wood", sector: "beverly" });
+        woods.push(feature(polygonGeometry(piece), localPolygon.properties));
+        rings.push(piece[0]!);
+        ringOwners.push(patchPlan.center.join(","));
       }
     }
   }
 
   const reservePatches = [
-    ...[16, 21.5, 27, 33].map((x, index) => ({ center: [x, 31.5] as XY, rx: 2.5, ry: 2.1, phase: index * 0.8 })),
-    ...[20, 12, 4].map((y, index) => ({ center: [33, y] as XY, rx: 2.6, ry: 2.7, phase: 1.1 + index * 0.7 })),
+    { center: [15.5, 32.0] as XY, rx: 4.75, ry: 2.3, phase: 0.2, angle: 0.1 },
+    { center: [25.3, 32.2] as XY, rx: 2.8, ry: 2.4, phase: 1.1, angle: -0.3 },
+    { center: [29.9, 31.3] as XY, rx: 0.7, ry: 0.8, phase: 2.5, angle: 0.62 },
+    { center: [33.4, 31.5] as XY, rx: 1.5, ry: 2.0, phase: 3.2, angle: 1.05 },
+    { center: [34.0, 21.0] as XY, rx: 2.0, ry: 3.5, phase: 0.7, angle: -0.17 },
+    { center: [33.7, 13.4] as XY, rx: 1.5, ry: 2.8, phase: 1.9, angle: 0.35 },
+    { center: [33.7, 5.0] as XY, rx: 2.3, ry: 4.25, phase: 2.8, angle: -0.35 },
   ];
-  const priorReserveWoods: Feature<Polygon | MultiPolygon, Properties>[] = [];
+  const reserveForestBoundary = woodlandDistrictInsets(reserveDistrict.ring);
   for (const patch of reservePatches) {
-    const ring = forestEllipse(patch.center, patch.rx, patch.ry, patch.phase);
-    for (const piece of intersectWithRing([ring], reserveDistrict.ring)) {
-      let fragments: Feature<Polygon | MultiPolygon, Properties>[] = [feature(localPolygonWithHoles(piece).geometry, {})];
-      for (const town of towns) {
-        fragments = fragments.flatMap((fragment) => {
-          const difference = subtractPolygon(fragment, localPolygon(town.ring));
-          return difference ? polygonPieces(difference.geometry).map((part) => feature(localPolygonWithHoles(part).geometry, {})) : [];
-        });
-      }
-      for (const obstacle of priorReserveWoods) {
-        fragments = fragments.flatMap((fragment) => {
-          const difference = subtractPolygon(fragment, obstacle);
-          return difference ? polygonPieces(difference.geometry).map((part) => feature(localPolygonWithHoles(part).geometry, {})) : [];
-        });
-      }
-      for (const fragment of fragments) {
-        for (const part of polygonPieces(fragment.geometry)) {
-          if (planarArea(part) < 0.3) continue;
-          const wood = feature(localPolygonWithHoles(part).geometry, { kind: "wood", sector: "reserve" });
-          woods.push(feature(polygonGeometry(part), wood.properties));
-          priorReserveWoods.push(wood);
-          rings.push(part[0]!);
+    const ring = forestEllipse(patch.center, patch.rx, patch.ry, patch.phase, woodlandRand, patch.angle);
+    for (const clipRing of reserveForestBoundary) for (const piece of intersectWithRing([ring], clipRing)) {
+      for (const part of polygonPieces(localPolygonWithHoles(piece).geometry)) {
+        if (planarArea(part) < 0.3) continue;
+        const wood = feature(localPolygonWithHoles(part).geometry, { kind: "wood", sector: "reserve" });
+        const overlappingTown = towns.find((town) => !disjoint(part[0]!, town.ring));
+        const overlappingPatch = rings.findIndex((existing) => !disjoint(part[0]!, existing));
+        if (overlappingTown || overlappingPatch >= 0) {
+          throw new Error(`Reserve wood at ${patch.center} overlaps ${overlappingTown?.id ?? `forest at ${ringOwners[overlappingPatch]}`}.`);
         }
+        woods.push(feature(polygonGeometry(part), wood.properties));
+        rings.push(part[0]!);
+        ringOwners.push(patch.center.join(","));
       }
     }
   }
+  if (preserveLandRandomSequence) for (let index = 0; index < beverlyPatches.length + reservePatches.length; index += 1) landRand();
   return { features: woods, rings };
 }
 
@@ -1171,27 +1212,89 @@ function createTownAreas(): TownArea[] {
   });
 }
 
-function generateBeverlyRoads(output: RoadDefinition[]): void {
+export function generateWoodlandsForValidation() {
+  rand = rng(0x4d4f4e41);
+  landRand = rng(0x4c414e44);
+  const towns = createTownAreas();
+  const woods = generateWoods(towns, false);
+  const farms = generateFarmAndPortSurfaces(woods.rings, towns, woods.features)
+    .filter((surface) => surface.properties?.kind === "farm");
+  return {
+    woods: woods.features,
+    farms,
+    towns: towns.map(({ id, ring }) => feature(polygonGeometry([ring]), { id })),
+    districts: {
+      beverly: feature(polygonGeometry([beverlyDistrict.ring]), { id: "beverly" }),
+      reserve: feature(polygonGeometry([reserveDistrict.ring]), { id: "reserve" }),
+    },
+  };
+}
+
+function generateBeverlyRoads(
+  output: RoadDefinition[],
+  contours: readonly { level: number; path: XY[] }[],
+): void {
   const gridSize = 0.1;
   const columns = 191;
   const rows = 67;
   const positionAt = (id: number): XY => [9 + (id % columns) * gridSize, 2.35 + Math.floor(id / columns) * gridSize];
   const gridId = ([x, y]: XY): number => Math.round((y - 2.35) / gridSize) * columns + Math.round((x - 9) / gridSize);
-  const allowed = Array.from({ length: columns * rows }, (_, id) => pointInRing(positionAt(id), beverlyDistrict.ring));
+  const roadClearance = 0.012 / 2 + 0.001;
+  const routeExclusions = roadExclusions.map((ring) => ({
+    minX: Math.min(...ring.map(([x]) => x)) - roadClearance,
+    maxX: Math.max(...ring.map(([x]) => x)) + roadClearance,
+    minY: Math.min(...ring.map(([, y]) => y)) - roadClearance,
+    maxY: Math.max(...ring.map(([, y]) => y)) + roadClearance,
+  }));
+  const segmentHitsBounds = (start: XY, end: XY, bounds: { minX: number; maxX: number; minY: number; maxY: number }): boolean => {
+    let enter = 0;
+    let exit = 1;
+    for (const [origin, delta, minimum, maximum] of [
+      [start[0], end[0] - start[0], bounds.minX, bounds.maxX],
+      [start[1], end[1] - start[1], bounds.minY, bounds.maxY],
+    ]) {
+      if (Math.abs(delta) < 1e-12) {
+        if (origin < minimum || origin > maximum) return false;
+        continue;
+      }
+      const first = (minimum - origin) / delta;
+      const second = (maximum - origin) / delta;
+      enter = Math.max(enter, Math.min(first, second));
+      exit = Math.min(exit, Math.max(first, second));
+      if (enter > exit) return false;
+    }
+    return exit >= 0 && enter <= 1;
+  };
+  const segmentAvoidsExclusions = (start: XY, end: XY): boolean => routeExclusions.every((bounds) => !segmentHitsBounds(start, end, bounds));
+  const pathAvoidsExclusions = (path: readonly XY[]): boolean => path.slice(1).every((position, index) =>
+    segmentAvoidsExclusions(path[index]!, position));
+  const allowed = Array.from({ length: columns * rows }, (_, id) => pointInRing(positionAt(id), beverlyDistrict.ring)
+    && routeExclusions.every((bounds) => {
+      const [x, y] = positionAt(id);
+      return x < bounds.minX || x > bounds.maxX || y < bounds.minY || y > bounds.maxY;
+    }));
   const heights = Float64Array.from(allowed, (_, id) => elevationAt(...positionAt(id)));
   const directions: readonly XY[] = [
     [-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [-1, 1], [1, -1], [1, 1],
     [-2, -1], [-2, 1], [2, -1], [2, 1], [-1, -2], [1, -2], [-1, 2], [1, 2],
   ];
-  const gradeLimit = 0.075;
+  const gradeLimit = 0.08;
+  const routeGradeLimit = 0.075;
+  const runSlots = 7;
+  const directionSlots = directions.length + 1;
+  const statesPerNode = runSlots * directionSlots;
+  const routeStraightLimit = 0.45;
+  const nodeOf = (state: number): number => Math.floor(state / statesPerNode);
+  const directionOf = (state: number): number => Math.floor(state / runSlots) % directionSlots;
+  const runOf = (state: number): number => state % runSlots;
   const safeEdges = new Map<string, boolean>();
   const route = (start: XY, goal: XY): XY[] => {
     const from = gridId(start);
     const to = gridId(goal);
     if (!allowed[from] || !allowed[to]) throw new Error("Beverly hill-road endpoint falls outside the district.");
-    const distances = new Float64Array(allowed.length).fill(Number.POSITIVE_INFINITY);
-    const previous = new Int32Array(allowed.length).fill(-1);
-    const visited = new Uint8Array(allowed.length);
+    const distances = new Float64Array(allowed.length * statesPerNode).fill(Number.POSITIVE_INFINITY);
+    const previous = new Int32Array(distances.length).fill(-1);
+    const visited = new Uint8Array(distances.length);
     const pending: Array<{ id: number; priority: number }> = [];
     const add = (id: number, priority: number): void => {
       let index = pending.length;
@@ -1219,21 +1322,23 @@ function generateBeverlyRoads(output: RoadDefinition[]): void {
       }
       return first;
     };
-    distances[from] = 0;
-    add(from, Math.hypot(start[0] - goal[0], start[1] - goal[1]));
+    const startState = (from * directionSlots + directions.length) * runSlots;
+    distances[startState] = 0;
+    add(startState, Math.hypot(start[0] - goal[0], start[1] - goal[1]));
     while (pending.length > 0) {
-      const current = remove().id;
-      if (visited[current]) continue;
+      const currentState = remove().id;
+      const current = nodeOf(currentState);
+      if (visited[currentState]) continue;
       if (current === to) {
         const path: XY[] = [];
-        for (let cursor = to; cursor !== -1; cursor = previous[cursor]!) path.push(positionAt(cursor));
+        for (let cursor = currentState; cursor !== -1; cursor = previous[cursor]!) path.push(positionAt(nodeOf(cursor)));
         return path.reverse();
       }
-      visited[current] = 1;
+      visited[currentState] = 1;
       const x = current % columns;
       const y = Math.floor(current / columns);
       const first = positionAt(current);
-      for (const [dx, dy] of directions) {
+      for (const [directionIndex, [dx, dy]] of directions.entries()) {
         const nextX = x + dx;
         const nextY = y + dy;
         if (nextX < 0 || nextX >= columns || nextY < 0 || nextY >= rows) continue;
@@ -1242,6 +1347,10 @@ function generateBeverlyRoads(output: RoadDefinition[]): void {
         const second = positionAt(next);
         const length = Math.hypot(second[0] - first[0], second[1] - first[1]);
         const edgeId = `${Math.min(current, next)}:${Math.max(current, next)}`;
+        if (!segmentAvoidsExclusions(first, second)) {
+          safeEdges.set(edgeId, false);
+          continue;
+        }
         let safe = safeEdges.get(edgeId);
         if (safe === undefined) {
           const samples = Math.ceil(length / 0.05);
@@ -1250,7 +1359,7 @@ function generateBeverlyRoads(output: RoadDefinition[]): void {
           for (let sample = 1; sample <= samples; sample += 1) {
             const ratio = sample / samples;
             const height = elevationAt(first[0] + (second[0] - first[0]) * ratio, first[1] + (second[1] - first[1]) * ratio);
-            if (Math.abs(height - priorHeight) / (length * 1000 / samples) > gradeLimit) {
+            if (Math.abs(height - priorHeight) / (length * 1000 / samples) > routeGradeLimit) {
               safe = false;
               break;
             }
@@ -1259,29 +1368,339 @@ function generateBeverlyRoads(output: RoadDefinition[]): void {
           safeEdges.set(edgeId, safe);
         }
         if (!safe) continue;
+        const runCount = directionIndex === directionOf(currentState) ? runOf(currentState) + 1 : 1;
+        if (runCount >= runSlots || runCount * length > routeStraightLimit + 1e-9) continue;
+        const nextState = (next * directionSlots + directionIndex) * runSlots + runCount;
+        if (visited[nextState]) continue;
         const grade = Math.abs(heights[next]! - heights[current]!) / (length * 1000);
-        const cost = distances[current]! + length * (1 + grade * 8);
-        if (cost >= distances[next]!) continue;
-        distances[next] = cost;
-        previous[next] = current;
-        add(next, cost + Math.hypot(second[0] - goal[0], second[1] - goal[1]));
+        const cost = distances[currentState]! + length * (1 + grade * 8);
+        if (cost >= distances[nextState]!) continue;
+        distances[nextState] = cost;
+        previous[nextState] = currentState;
+        add(nextState, cost + Math.hypot(second[0] - goal[0], second[1] - goal[1]));
       }
     }
     throw new Error(`No grade-limited Beverly route from ${start} to ${goal}.`);
   };
 
-  const spine: XY[] = [];
-  for (let index = 0; index <= 167; index += 1) spine.push([11.3 + index * gridSize, 2.35]);
-  addRoad(output, "hillroad-contour-spine", "", "hillroad", 0.012, spine);
-  for (const [index, hill] of beverlyHills.entries()) {
-    addRoad(output, `hillroad-${String(index + 1).padStart(2, "0")}-1`, "", "hillroad", 0.012,
-      route([hill.center[0], 2.35], [hill.center[0] + 0.7, 3.45]));
+  const sampledGrade = (path: readonly XY[]): number => {
+    let maximum = 0;
+    for (let index = 1; index < path.length; index += 1) {
+      const start = path[index - 1]!;
+      const end = path[index]!;
+      const length = Math.hypot(end[0] - start[0], end[1] - start[1]);
+      const samples = Math.max(1, Math.ceil(length / 0.05));
+      let previous = elevationAt(start[0], start[1]);
+      for (let sample = 1; sample <= samples; sample += 1) {
+        const ratio = sample / samples;
+        const current = elevationAt(start[0] + (end[0] - start[0]) * ratio, start[1] + (end[1] - start[1]) * ratio);
+        maximum = Math.max(maximum, Math.abs(current - previous) / (length * 1000 / samples));
+        previous = current;
+      }
+    }
+    return maximum;
+  };
+  const gradeSafeGridAnchors = (position: XY): XY[] => {
+    const center = gridId(position);
+    const centerX = center % columns;
+    const centerY = Math.floor(center / columns);
+    const candidates: Array<{ position: XY; distance: number }> = [];
+    for (let offsetY = -2; offsetY <= 2; offsetY += 1) {
+      for (let offsetX = -2; offsetX <= 2; offsetX += 1) {
+        const x = centerX + offsetX;
+        const y = centerY + offsetY;
+        if (x < 0 || x >= columns || y < 0 || y >= rows) continue;
+        const id = y * columns + x;
+        if (!allowed[id]) continue;
+        const candidate = positionAt(id);
+        const distance = Math.hypot(candidate[0] - position[0], candidate[1] - position[1]);
+        if (distance > 0.25 || !segmentAvoidsExclusions(position, candidate)
+          || sampledGrade([position, candidate]) > routeGradeLimit) continue;
+        candidates.push({ position: candidate, distance });
+      }
+    }
+    return candidates.sort((first, second) => first.distance - second.distance).map(({ position: candidate }) => candidate);
+  };
+  const maximumStraightRun = (path: readonly XY[]): number => {
+    const coordinateCellDiagonal = Math.hypot(longitudeScale * 1e-6, latitudeScale * 1e-6);
+    let longest = 0;
+    let run = 0;
+    let previous: XY | undefined;
+    let previousLength = 0;
+    for (let index = 1; index < path.length; index += 1) {
+      const start = path[index - 1]!;
+      const end = path[index]!;
+      const dx = end[0] - start[0];
+      const dy = end[1] - start[1];
+      const length = Math.hypot(dx, dy);
+      if (previous) {
+        const previousDx = start[0] - previous[0];
+        const previousDy = start[1] - previous[1];
+        const cross = Math.abs(previousDx * dy - previousDy * dx);
+        const dot = previousDx * dx + previousDy * dy;
+        if (dot > 0 && cross / previousLength <= coordinateCellDiagonal) run += length;
+        else {
+          longest = Math.max(longest, run);
+          run = length;
+        }
+      } else {
+        run = length;
+      }
+      longest = Math.max(longest, run);
+      previous = start;
+      previousLength = length;
+    }
+    return longest;
+  };
+  const longestStraightRunBounds = (path: readonly XY[]): { start: number; end: number; length: number } => {
+    const coordinateCellDiagonal = Math.hypot(longitudeScale * 1e-6, latitudeScale * 1e-6);
+    let runStart = 0;
+    let runLength = 0;
+    let bestLength = 0;
+    let bestStart = 0;
+    let bestEnd = 0;
+    let previous: XY | undefined;
+    let previousLength = 0;
+    const consider = (end: number): void => {
+      if (runLength > bestLength) {
+        bestLength = runLength;
+        bestStart = runStart;
+        bestEnd = end;
+      }
+    };
+    for (let index = 1; index < path.length; index += 1) {
+      const start = path[index - 1]!;
+      const end = path[index]!;
+      const dx = end[0] - start[0];
+      const dy = end[1] - start[1];
+      const length = Math.hypot(dx, dy);
+      if (previous) {
+        const previousDx = start[0] - previous[0];
+        const previousDy = start[1] - previous[1];
+        const cross = Math.abs(previousDx * dy - previousDy * dx);
+        const dot = previousDx * dx + previousDy * dy;
+        if (dot > 0 && cross / previousLength <= coordinateCellDiagonal) runLength += length;
+        else {
+          consider(index - 1);
+          runStart = index - 1;
+          runLength = length;
+        }
+      } else {
+        runStart = index - 1;
+        runLength = length;
+      }
+      previous = start;
+      previousLength = length;
+    }
+    consider(path.length - 1);
+    return { start: bestStart, end: bestEnd, length: bestLength };
+  };
+  const smoothPath = (path: readonly XY[]): XY[] => {
+    if (path.length < 3) return [...path];
+    const smoothed: XY[] = [path[0]!];
+    for (let index = 1; index < path.length; index += 1) {
+      const start = path[index - 1]!;
+      const end = path[index]!;
+      smoothed.push([
+        start[0] * 0.75 + end[0] * 0.25,
+        start[1] * 0.75 + end[1] * 0.25,
+      ]);
+      smoothed.push([
+        start[0] * 0.25 + end[0] * 0.75,
+        start[1] * 0.25 + end[1] * 0.75,
+      ]);
+    }
+    smoothed.push(path.at(-1)!);
+    return smoothed;
+  };
+  const rerouteLongStraightRuns = (source: readonly XY[]): XY[] => {
+    let path = [...source];
+    while (true) {
+      const span = longestStraightRunBounds(path);
+      if (span.length <= 0.6 - 0.00014) return path;
+      if (span.end <= span.start) throw new Error("Cannot reroute a zero-length Beverly hill-road straight run.");
+      const start = path[span.start]!;
+      const end = path[span.end]!;
+      let replacement: XY[] | undefined;
+      let routeError = "no candidate path met the exported grade, curvature, district, and landmark constraints";
+      const failures: string[] = [];
+      const startAnchors = gradeSafeGridAnchors(start);
+      const endAnchors = gradeSafeGridAnchors(end);
+      for (const startAnchor of startAnchors) {
+        for (const endAnchor of endAnchors) {
+          try {
+            const gridPath = route(startAnchor, endAnchor);
+            const candidates = [smoothPath(gridPath), gridPath];
+            for (const [candidateIndex, candidate] of candidates.entries()) {
+              const joined: XY[] = [];
+              for (const position of [start, ...candidate, end]) {
+                if (!joined.length || Math.hypot(position[0] - joined.at(-1)![0], position[1] - joined.at(-1)![1]) > 1e-8) {
+                  joined.push(position);
+                }
+              }
+              const grade = sampledGrade(joined);
+              const straightRun = maximumStraightRun(joined);
+              const inDistrict = joined.slice(1).every((position) => pointInRing(position, beverlyDistrict.ring));
+              const clearOfLandmarks = pathAvoidsExclusions(joined);
+              if (inDistrict && clearOfLandmarks && grade <= gradeLimit
+                && straightRun <= 0.6 - 0.00014 && straightRun < span.length) {
+                replacement = joined;
+                break;
+              }
+              failures.push(`${candidateIndex === 0 ? "smoothed" : "grid"}: grade ${(grade * 100).toFixed(3)}%, straight ${(straightRun * 1000).toFixed(1)}m, district ${inDistrict}, landmarks ${clearOfLandmarks}`);
+            }
+            if (replacement) break;
+          } catch (error) {
+            failures.push(error instanceof Error ? error.message : String(error));
+          }
+        }
+        if (replacement) break;
+      }
+      if (!replacement) routeError = failures.slice(-4).join("; ") || routeError;
+      if (!replacement) {
+        throw new Error(`Cannot grade-constrain the Beverly straight run from ${start} to ${end}: ${routeError}.`);
+      }
+      path = [...path.slice(0, span.start), ...replacement.slice(1, -1), ...path.slice(span.end)];
+    }
+  };
+  const connectToContour = (arterialPoint: XY, gridPoint: XY, loop: readonly XY[], preferred: XY): { index: number; path: XY[] } => {
+    const candidates = loop.map((contourPoint, index) => ({
+      index,
+      contourPoint,
+      distance: Math.hypot(contourPoint[0] - preferred[0], contourPoint[1] - preferred[1]),
+    })).sort((first, second) => first.distance - second.distance);
+    let lastError = "no contour point met the sampled connector constraints";
+    for (const { index, contourPoint } of candidates) {
+      const goalId = gridId(contourPoint);
+      if (!allowed[goalId] || sampledGrade([positionAt(goalId), contourPoint]) > gradeLimit) continue;
+      try {
+        const gridPath = route(gridPoint, contourPoint);
+        for (const candidate of [smoothPath(gridPath), gridPath]) {
+          const path: XY[] = [];
+          for (const position of [arterialPoint, ...candidate, contourPoint]) {
+            if (!path.length || Math.hypot(position[0] - path.at(-1)![0], position[1] - path.at(-1)![1]) > 1e-8) {
+              path.push(position);
+            }
+          }
+          if (path.slice(1).every((position) => pointInRing(position, beverlyDistrict.ring))
+            && pathAvoidsExclusions(path)
+            && sampledGrade(path) <= gradeLimit) return { index, path };
+        }
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+      }
+    }
+    throw new Error(`No sampled-grade Beverly connector from ${arterialPoint} to contour near ${preferred}: ${lastError}.`);
+  };
+
+  const a2 = output.find((road) => road.id === "A2");
+  const a3 = output.find((road) => road.id === "A3");
+  if (!a2 || !a3) throw new Error("Beverly contour roads require A2 and A3 arterial routes.");
+  const insertRoadVertex = (road: RoadDefinition, position: XY): XY => {
+    for (let index = 1; index < road.coordinates.length; index += 1) {
+      const start = road.coordinates[index - 1]!;
+      const end = road.coordinates[index]!;
+      const segmentLength = Math.hypot(end[0] - start[0], end[1] - start[1]);
+      if (Math.hypot(position[0] - start[0], position[1] - start[1]) < 1e-8) return start;
+      if (Math.hypot(position[0] - end[0], position[1] - end[1]) < 1e-8) return end;
+      if (distanceToSegment(position, start, end) <= 1e-8 && segmentLength > 0) {
+        road.coordinates = [...road.coordinates.slice(0, index), position, ...road.coordinates.slice(index)];
+        return position;
+      }
+    }
+    throw new Error(`Cannot snap Beverly hill-road access to ${road.id}.`);
+  };
+  const a2Anchor = insertRoadVertex(a2, closestPointOnRoad([9.1, 2.35], a2));
+  const a2Start = positionAt(gridId(a2Anchor));
+  const a3Anchor = insertRoadVertex(a3, closestPointOnRoad([28, 9], a3));
+  const a3Start: XY = [27.9, 8.95];
+  const a3StartId = gridId(a3Start);
+  if (!allowed[gridId(a2Anchor)] || !allowed[a3StartId]) {
+    throw new Error("Beverly A2/A3 connector starts must lie inside the road-search grid.");
   }
-  addRoad(output, "hillroad-link-a2", "", "hillroad", 0.012,
-    [[9, 2.35], [11.3, 2.35]]);
-  addRoad(output, "hillroad-link-a3", "", "hillroad", 0.012, [[28, 2.35], [28, 9]]);
-  addRoad(output, "hillroad-governors-access", "", "hillroad", 0.012,
-    route([11.3, 2.35], [10.8, 4.55]));
+
+  const eligibleContours = contours
+    .filter(({ level, path }) => [160, 200, 240].includes(level)
+      && Math.hypot(path[0]![0] - path.at(-1)![0], path[0]![1] - path.at(-1)![1]) <= 0.001
+      && sampledGrade(path) <= gradeLimit)
+    .sort((first, second) => first.level - second.level)
+    .slice(0, 3);
+  if (eligibleContours.length !== 3) throw new Error("Three closed Beverly contours must meet the sampled grade limit.");
+
+  const arc = (path: readonly XY[], start: number, end: number): XY[] => {
+    const result: XY[] = [path[start]!];
+    let index = start;
+    while (index !== end) {
+      index = (index + 1) % path.length;
+      result.push(path[index]!);
+    }
+    return result;
+  };
+  for (const contour of eligibleContours) {
+    const loop = contour.path.slice(0, -1);
+    if (loop.length < 4) throw new Error(`Beverly ${contour.level} m contour has too few points for a road loop.`);
+    const firstAccess = connectToContour(a2Anchor, a2Start, loop, a2Anchor);
+    const secondAccess = contour.level === 160
+      ? connectToContour(a3Anchor, a3Start, loop, a3Anchor)
+      : undefined;
+    const start = firstAccess.index;
+    const end = secondAccess?.index ?? (start + Math.floor(loop.length / 2)) % loop.length;
+    if (start === end) throw new Error(`Beverly ${contour.level} m contour cannot be split into connected road arcs.`);
+    const firstArc = arc(loop, start, end);
+    const secondArc = arc(loop, end, start);
+    if (contour.level === 200) {
+      const uniqueLoop = loop.slice(0, -1);
+      const ordered = [...uniqueLoop.slice(start), ...uniqueLoop.slice(0, start), uniqueLoop[start]!];
+      const routedPath = rerouteLongStraightRuns([...firstAccess.path, ...ordered.slice(1)]);
+      const firstSplit = Math.floor((routedPath.length - 1) / 3);
+      const secondSplit = Math.floor(2 * (routedPath.length - 1) / 3);
+      const arcs = [
+        routedPath.slice(0, firstSplit + 1),
+        routedPath.slice(firstSplit, secondSplit + 1),
+        routedPath.slice(secondSplit),
+      ];
+      for (const [index, path] of arcs.entries()) {
+        const grade = sampledGrade(path);
+        if (grade > gradeLimit) throw new Error(`Beverly 200 m road arc exceeds the sampled grade limit: ${(grade * 100).toFixed(2)}%.`);
+        const suffix = String.fromCharCode(97 + index);
+        const roadId = index === 0 ? `hillroad-access-200-${suffix}` : `hillroad-contour-200-${suffix}`;
+        addRoad(output, roadId, "", "hillroad", 0.012, path);
+      }
+      continue;
+    }
+    const splitArc = (path: readonly XY[]): [XY[], XY[]] => {
+      const midpoint = Math.floor((path.length - 1) / 2);
+      return [path.slice(0, midpoint + 1), path.slice(midpoint)];
+    };
+    const firstParts = splitArc(firstArc);
+    const secondParts = splitArc(secondArc);
+    const roadPaths = contour.level === 160
+      ? [
+        [...firstAccess.path, ...firstParts[0].slice(1)],
+        firstParts[1],
+        [...secondAccess!.path, ...secondParts[0].slice(1)],
+        secondParts[1],
+      ]
+      : [
+        [...firstAccess.path, ...firstParts[0].slice(1)],
+        firstParts[1],
+        secondParts[0],
+        secondParts[1],
+      ];
+    const suffixes = ["a", "b", "c", "d"];
+    for (const [index, sourcePath] of roadPaths.entries()) {
+      const path = rerouteLongStraightRuns(sourcePath);
+      if (sampledGrade(path) > gradeLimit) {
+        throw new Error(`Beverly ${contour.level} m road arc exceeds the sampled 8% grade limit.`);
+      }
+      const suffix = suffixes[index]!;
+      const isAccess = contour.level === 160 && (suffix === "a" || suffix === "c");
+      const roadId = isAccess
+        ? `hillroad-access-${contour.level}-${suffix}`
+        : `hillroad-contour-${contour.level}-${suffix}`;
+      addRoad(output, roadId, "", "hillroad", 0.012, path);
+    }
+  }
 }
 
 function closestPointOnRoad(position: XY, road: RoadDefinition): XY {
@@ -1564,7 +1983,7 @@ function addBeverlyVillas(roads: RoadIndex, roadDefinitions: readonly RoadDefini
       const dx = end[0] - start[0];
       const dy = end[1] - start[1];
       const length = Math.hypot(dx, dy);
-      const samples = Math.max(1, Math.ceil(length / 0.045));
+      const samples = Math.max(1, Math.ceil(length / 0.025));
       for (let sample = 0; sample < samples && created < target; sample += 1) {
         const t = sample / samples;
         const onRoad: XY = [start[0] + dx * t, start[1] + dy * t];
@@ -1615,7 +2034,7 @@ function addReserveTownBuildings(towns: readonly TownArea[], roads: RoadIndex): 
       for (let column = -8; column <= 8 && created < 100; column += 1) {
         const candidate: XY = [town.center[0] + column * 0.045, town.center[1] + row * 0.045];
         const centerDistance = Math.hypot(town.center[0] - candidate[0], town.center[1] - candidate[1]);
-        const inset = centerDistance === 0 ? 0 : 0.0015 / centerDistance;
+        const inset = centerDistance === 0 ? 0 : 0.04 / centerDistance;
         const position: XY = [
           candidate[0] + (town.center[0] - candidate[0]) * inset,
           candidate[1] + (town.center[1] - candidate[1]) * inset,
@@ -1766,13 +2185,13 @@ export function generateData(): Record<string, Collection> {
   const towns = createTownAreas();
   addPlazaAndLandmarks();
   generateRegionalTexture(generatedRoads);
-  generateBeverlyRoads(generatedRoads);
+  const terrain = generateBeverlyTerrain();
+  generateBeverlyRoads(generatedRoads, terrain.contourPaths);
   generateRuralRoads(generatedRoads, towns);
   const clippedRoads = clipRoadsAroundLandmarks(generatedRoads, roadExclusions);
   const roadIndex = buildRoadIndex(clippedRoads);
   const coastIndex = buildRoadIndex([{ id: "coastal-setback", name: "", roadClass: "local", width: 0.06, coordinates: coastline }]);
   const woods = generateWoods(towns);
-  const terrain = generateBeverlyTerrain();
   generateBlocksAndBuildings(roadIndex, coastIndex, clippedRoads, woods.rings, towns);
   const metro = generateMetro(clippedRoads);
 

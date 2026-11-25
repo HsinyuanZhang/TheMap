@@ -101,14 +101,7 @@ function distanceToSegment(
 }
 
 function roadFeaturesTouch(first: Feature<Geometry, Properties>, second: Feature<Geometry, Properties>): boolean {
-  if (booleanIntersects(first, second)) return true;
-  if (first.geometry?.type !== 'LineString' || second.geometry?.type !== 'LineString') return false;
-  const firstPath = first.geometry.coordinates.map(localPosition);
-  const secondPath = second.geometry.coordinates.map(localPosition);
-  const endpointsTouch = (endpoints: readonly [number, number][], path: readonly [number, number][]): boolean =>
-    endpoints.some((endpoint) => path.slice(1).some((next, index) => distanceToSegment(endpoint, path[index]!, next) <= 0.003));
-  return endpointsTouch([firstPath[0]!, firstPath.at(-1)!], secondPath)
-    || endpointsTouch([secondPath[0]!, secondPath.at(-1)!], firstPath);
+  return booleanIntersects(first, second);
 }
 
 function roadDistanceFrom(position: readonly [number, number], road: Feature<Geometry, Properties>): number {

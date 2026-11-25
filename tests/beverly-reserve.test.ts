@@ -65,14 +65,101 @@ function roadDistance(position: XY, road: DataFeature): number {
   return Math.min(...path.slice(1).map((next, index) => distanceToSegment(position, path[index]!, next)));
 }
 
+function maximumStraightRun(path: readonly XY[]): number {
+  const coordinateCellDiagonal = Math.hypot(111.32 * Math.cos(40 * Math.PI / 180) * 1e-6, 110.574e-6);
+  let longest = 0;
+  let run = 0;
+  let previous: XY | undefined;
+  let previousLength = 0;
+  for (let index = 1; index < path.length; index += 1) {
+    const start = path[index - 1]!;
+    const end = path[index]!;
+    const dx = end[0] - start[0];
+    const dy = end[1] - start[1];
+    const length = Math.hypot(dx, dy);
+    if (previous) {
+      const previousDx = start[0] - previous[0];
+      const previousDy = start[1] - previous[1];
+      const cross = Math.abs(previousDx * dy - previousDy * dx);
+      const dot = previousDx * dx + previousDy * dy;
+      if (dot > 0 && cross / previousLength <= coordinateCellDiagonal) run += length;
+      else {
+        longest = Math.max(longest, run);
+        run = length;
+      }
+    } else {
+      run = length;
+    }
+    longest = Math.max(longest, run);
+    previous = start;
+    previousLength = length;
+  }
+  return longest;
+}
+
+function maximumNetworkStraightRun(roads: readonly DataFeature[]): number {
+  interface Segment {
+    id: string;
+    startKey: string;
+    endKey: string;
+    start: XY;
+    end: XY;
+    length: number;
+  }
+  const segments = new Map<string, Segment>();
+  const byVertex = new Map<string, Segment[]>();
+  for (const road of roads) {
+    if (road.geometry?.type !== 'LineString') continue;
+    const coordinates = road.geometry.coordinates;
+    for (let index = 1; index < coordinates.length; index += 1) {
+      const startCoordinate = coordinates[index - 1]!;
+      const endCoordinate = coordinates[index]!;
+      const startKey = `${startCoordinate[0]},${startCoordinate[1]}`;
+      const endKey = `${endCoordinate[0]},${endCoordinate[1]}`;
+      if (startKey === endKey) continue;
+      const id = startKey < endKey ? `${startKey}|${endKey}` : `${endKey}|${startKey}`;
+      if (segments.has(id)) continue;
+      const start = localPosition(startCoordinate);
+      const end = localPosition(endCoordinate);
+      const segment = { id, startKey, endKey, start, end, length: Math.hypot(end[0] - start[0], end[1] - start[1]) };
+      segments.set(id, segment);
+      byVertex.set(startKey, [...(byVertex.get(startKey) ?? []), segment]);
+      byVertex.set(endKey, [...(byVertex.get(endKey) ?? []), segment]);
+    }
+  }
+  const coordinateCellDiagonal = Math.hypot(longitudeScale * 1e-6, latitudeScale * 1e-6);
+  let longest = 0;
+  const extend = (
+    vertex: string,
+    previousX: number,
+    previousY: number,
+    previousLength: number,
+    length: number,
+    used: ReadonlySet<string>,
+  ): void => {
+    longest = Math.max(longest, length);
+    for (const segment of byVertex.get(vertex) ?? []) {
+      if (used.has(segment.id)) continue;
+      const forward = segment.startKey === vertex;
+      const nextVertex = forward ? segment.endKey : segment.startKey;
+      const dx = forward ? segment.end[0] - segment.start[0] : segment.start[0] - segment.end[0];
+      const dy = forward ? segment.end[1] - segment.start[1] : segment.start[1] - segment.end[1];
+      const cross = Math.abs(previousX * dy - previousY * dx);
+      if (previousX * dx + previousY * dy <= 0 || cross / previousLength > coordinateCellDiagonal) continue;
+      extend(nextVertex, dx, dy, segment.length, length + segment.length, new Set([...used, segment.id]));
+    }
+  };
+  for (const segment of segments.values()) {
+    const dx = segment.end[0] - segment.start[0];
+    const dy = segment.end[1] - segment.start[1];
+    extend(segment.endKey, dx, dy, segment.length, segment.length, new Set([segment.id]));
+    extend(segment.startKey, -dx, -dy, segment.length, segment.length, new Set([segment.id]));
+  }
+  return longest;
+}
+
 function roadsTouch(first: DataFeature, second: DataFeature): boolean {
-  if (booleanIntersects(first, second)) return true;
-  if (first.geometry?.type !== 'LineString' || second.geometry?.type !== 'LineString') return false;
-  const a = first.geometry.coordinates.map(localPosition);
-  const b = second.geometry.coordinates.map(localPosition);
-  const touches = (endpoints: XY[], line: XY[]): boolean =>
-    endpoints.some((endpoint) => line.slice(1).some((next, index) => distanceToSegment(endpoint, line[index]!, next) <= 0.003));
-  return touches([a[0]!, a.at(-1)!], b) || touches([b[0]!, b.at(-1)!], a);
+  return booleanIntersects(first, second);
 }
 
 function reachableRoads(start: DataFeature, roads: readonly DataFeature[]): Set<DataFeature> {
@@ -115,7 +202,37 @@ test('Beverly and Reserve data meet terrain, land-use, town, and road-graph cons
   let minimumFarmSide = Number.POSITIVE_INFINITY;
   let maximumFarmSide = 0;
 
-  assert.ok(reserveWoods.length > 0 && beverlyWoods.length > 0);
+  const assertWoodShapeVariation = (patches: PolygonFeature[]): void => {
+    for (let first = 0; first < patches.length; first += 1) {
+      const ring = patches[first]!.geometry.coordinates[0]!;
+      assert.ok(ring.length >= 100, 'woods must export smooth, high-resolution outlines');
+      const local = ring.slice(0, -1).map(localPosition);
+      const center: XY = [
+        local.reduce((sum, [x]) => sum + x, 0) / local.length,
+        local.reduce((sum, [, y]) => sum + y, 0) / local.length,
+      ];
+      const radiusX = Math.max(...local.map(([x]) => Math.abs(x - center[0])));
+      const radiusY = Math.max(...local.map(([, y]) => Math.abs(y - center[1])));
+      const normalizedRadii = local.map(([x, y]) => Math.hypot((x - center[0]) / radiusX, (y - center[1]) / radiusY));
+      const meanRadius = normalizedRadii.reduce((sum, radius) => sum + radius, 0) / normalizedRadii.length;
+      const radiusVariation = Math.sqrt(normalizedRadii.reduce((sum, radius) => sum + (radius - meanRadius) ** 2, 0)
+        / normalizedRadii.length) / meanRadius;
+      assert.ok(radiusVariation > 0.035, 'woods must not be circular copies');
+      for (let second = first + 1; second < patches.length; second += 1) {
+        assertNoPositiveAreaOverlap(patches[first]!, patches[second]!, 'wood patches must not overlap');
+      }
+    }
+    const patchAreas = patches.map(areaKm2);
+    const meanArea = patchAreas.reduce((sum, value) => sum + value, 0) / patchAreas.length;
+    const areaVariation = Math.sqrt(patchAreas.reduce((sum, value) => sum + (value - meanArea) ** 2, 0)
+      / patchAreas.length) / meanArea;
+    assert.ok(areaVariation > 0.05, 'wood patches must vary in size');
+  };
+
+  assert.equal(reserveWoods.length, 7);
+  assert.equal(beverlyWoods.length, beverlyHills.length);
+  assertWoodShapeVariation(reserveWoods);
+  assertWoodShapeVariation(beverlyWoods);
   assert.ok(reserveWoodArea / reserveArea >= 0.3 && reserveWoodArea / reserveArea <= 0.4);
   assert.ok(reserveWoods.every((feature) => areaKm2(feature) >= 0.3));
   assert.ok(reserveWoods.filter((feature) => areaKm2(feature) > 5).length >= 3);
@@ -184,6 +301,9 @@ test('Beverly and Reserve data meet terrain, land-use, town, and road-graph cons
   const hillRoads = roads.filter((road) => road.properties?.class === 'hillroad');
   const hillRoadIds = new Set(hillRoads.map((road) => String(road.properties?.id).replace(/-part-\d+$/, '').replace(/-\d+$/, '')));
   assert.ok(hillRoadIds.size >= 8 && hillRoadIds.size <= 12);
+  const maximumHillNetworkStraightRun = maximumNetworkStraightRun(hillRoads);
+  assert.ok(maximumHillNetworkStraightRun <= 0.6 + 0.00014,
+    `exported hill-road network has a straight run of ${(maximumHillNetworkStraightRun * 1000).toFixed(1)} m`);
   const mainRoads = roads.filter((road) => ['motorway', 'arterial'].includes(String(road.properties?.class)));
   const a2 = mainRoads.find((road) => road.properties?.id === 'A2');
   const a3 = mainRoads.find((road) => road.properties?.id === 'A3');
@@ -192,7 +312,9 @@ test('Beverly and Reserve data meet terrain, land-use, town, and road-graph cons
   assert.ok(hillRoads.every((road) => hillGraph.has(road)));
   assert.ok(hillGraph.has(a3));
   let maxGrade = 0;
+  let maxGradeRoad = '';
   let maxRoadSegment = 0;
+  let totalHillRoadLength = 0;
   for (const road of hillRoads) {
     assert.equal(road.properties?.name, '');
     assert.ok(Math.abs(Number(road.properties?.width) - 0.012) < 1e-8);
@@ -203,6 +325,7 @@ test('Beverly and Reserve data meet terrain, land-use, town, and road-graph cons
       const end = path[segment]!;
       const length = Math.hypot(end[0] - start[0], end[1] - start[1]);
       maxRoadSegment = Math.max(maxRoadSegment, length);
+      totalHillRoadLength += length;
       assert.ok(length <= 0.6);
       const steps = Math.max(1, Math.ceil(length / 0.05));
       let previous = beverlyElevationAt(start);
@@ -210,12 +333,19 @@ test('Beverly and Reserve data meet terrain, land-use, town, and road-graph cons
         const current: XY = [start[0] + (end[0] - start[0]) * step / steps,
           start[1] + (end[1] - start[1]) * step / steps];
         const elevation = beverlyElevationAt(current);
-        maxGrade = Math.max(maxGrade, Math.abs(elevation - previous) / (length * 1000 / steps));
+        const grade = Math.abs(elevation - previous) / (length * 1000 / steps);
+        if (grade > maxGrade) {
+          maxGrade = grade;
+          maxGradeRoad = String(road.properties?.id);
+        }
         previous = elevation;
       }
     }
+    assert.ok(maximumStraightRun(path) <= 0.6 + 0.00014,
+      `hill road ${road.properties?.id} has a straight run longer than 600 m`);
   }
-  assert.ok(maxGrade <= 0.08);
+  assert.ok(maxGrade <= 0.08, `maximum sampled grade ${(maxGrade * 100).toFixed(2)}% on ${maxGradeRoad}`);
+  assert.equal([...hillRoadIds].filter((id) => id.startsWith('hillroad-contour-')).length, 8);
 
   const ruralRoads = roads.filter((road) => road.properties?.class === 'rural');
   assert.ok(ruralRoads.length >= 40);
@@ -301,6 +431,6 @@ test('Beverly and Reserve data meet terrain, land-use, town, and road-graph cons
     .every((feature) => feature.geometry?.type === 'LineString' && Number(feature.properties?.level) > 0 && Number(feature.properties?.level) % 40 === 0));
   assert.ok(overviewCollection.features.every((feature) => ['wood', 'band'].includes(String(feature.properties?.kind))));
   const houseCounts = towns.map((town) => `${town.properties?.town_id}:${townHouses.filter((house) => house.properties?.block_id === town.properties?.block_id).length}`).join(',');
-  console.log(`Beverly: peak ${peak} m, boundary max ${maximumBoundaryElevation} m, coast max ${maximumCoastElevation} m, woods ${(beverlyWoodArea / beverlyArea * 100).toFixed(2)}%, ${hillRoadIds.size} hill roads, max grade ${(maxGrade * 100).toFixed(2)}%, max segment ${(maxRoadSegment * 1000).toFixed(1)} m, ${villas.length} villas, elevation ${minimumVillaElevation}-${maximumVillaElevation} m, max slope ${(maximumVillaSlope * 100).toFixed(2)}%, max road distance ${(maximumVillaRoadDistance * 1000).toFixed(1)} m.`);
+  console.log(`Beverly: peak ${peak} m, boundary max ${maximumBoundaryElevation} m, coast max ${maximumCoastElevation} m, woods ${(beverlyWoodArea / beverlyArea * 100).toFixed(2)}%, ${hillRoadIds.size} hill roads ${totalHillRoadLength.toFixed(1)} km total, max grade ${(maxGrade * 100).toFixed(2)}%, max segment ${(maxRoadSegment * 1000).toFixed(1)} m, max straight run ${(maximumHillNetworkStraightRun * 1000).toFixed(1)} m, ${villas.length} villas, elevation ${minimumVillaElevation}-${maximumVillaElevation} m, max slope ${(maximumVillaSlope * 100).toFixed(2)}%, max road distance ${(maximumVillaRoadDistance * 1000).toFixed(1)} m.`);
   console.log(`Reserve: ${reserveWoods.length} woods patches ${(reserveWoodArea / reserveArea * 100).toFixed(2)}% (${reserveWoods.filter((feature) => areaKm2(feature) > 5).length} >5 km²), ${farms.length} Voronoi farms ${(farmArea / reserveArea * 100).toFixed(2)}%, field sides ${(minimumFarmSide * 1000).toFixed(1)}-${(maximumFarmSide * 1000).toFixed(1)} m, ${towns.length} towns with ${townHouses.length} houses [${houseCounts}], ${ruralRoads.length} rural roads.`);
 });
