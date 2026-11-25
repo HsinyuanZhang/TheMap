@@ -243,7 +243,10 @@ export function routeOnRoads(
       const next = stationById.get(line.stations[index]!);
       if (!previous || !next) throw new Error(`${line.id} references an unknown station.`);
       let segment: XY[];
-      if (line.id === "U1" && previous.id === "station-strait-exchange" && next.id === "station-times-square") {
+      const authored = line.routes?.[`${previous.id}>${next.id}`];
+      if (authored) {
+        segment = authored.map(([x, y]) => [x, y]);
+      } else if (line.id === "U1" && previous.id === "station-strait-exchange" && next.id === "station-times-square") {
         const broadway = roads.find((road) => road.id === "broadway")!;
         const endIndex = broadway.coordinates.findIndex((point) =>
           Math.hypot(point[0] - next.position[0], point[1] - next.position[1]) < 0.001,

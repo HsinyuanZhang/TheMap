@@ -11,6 +11,7 @@ import {
 } from './dataset-loader';
 import { MapController, type MapSelection } from './map';
 import { PlacePanel } from './panel';
+import { MAP_LEGEND_ITEMS } from './map-style';
 
 function element<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
@@ -26,6 +27,7 @@ const retryDataButton = element<HTMLButtonElement>('retry-map-data');
 const panelElement = element<HTMLElement>('place-panel');
 const placePanel = new PlacePanel();
 const viewToggle = element<HTMLButtonElement>('view-toggle');
+const allBuildings3d = element<HTMLInputElement>('all-buildings-3d');
 const datasetLoader = new DatasetLoader(import.meta.env.BASE_URL, async (path) => {
   const url = new URL(path, location.origin);
   if (url.origin !== location.origin) throw new Error('Map data must be same-origin.');
@@ -44,6 +46,27 @@ let lastHandledHash = location.hash;
 function showMapError(): void {
   mapError.textContent = '地图资源加载失败，请刷新页面重试。';
   mapError.hidden = false;
+}
+
+function renderMapLegend(): void {
+  const list = element<HTMLUListElement>('map-legend-items');
+  for (const item of MAP_LEGEND_ITEMS) {
+    const row = document.createElement('li');
+    const swatch = document.createElement('span');
+    swatch.className = 'legend-swatch';
+    if ('symbol' in item) {
+      swatch.classList.add('legend-swatch-line');
+      if (item.symbol === 'dashed-line') swatch.classList.add('legend-swatch-dashed');
+      swatch.style.setProperty('--legend-color', item.swatch);
+    } else {
+      swatch.style.background = item.swatch;
+    }
+    swatch.setAttribute('aria-hidden', 'true');
+    const label = document.createElement('span');
+    label.textContent = item.label;
+    row.append(swatch, label);
+    list.append(row);
+  }
 }
 
 function showDataNotice(failed: DatasetName[]): void {
@@ -191,6 +214,7 @@ async function start(): Promise<void> {
       mapController.setLayerVisible(group, checkbox.checked);
       checkbox.addEventListener('change', () => mapController?.setLayerVisible(group, checkbox.checked));
     }
+    allBuildings3d.addEventListener('change', () => mapController?.setShowAllBuildings(allBuildings3d.checked));
     element<HTMLButtonElement>('zoom-in').addEventListener('click', () => mapController?.zoomBy(1));
     element<HTMLButtonElement>('zoom-out').addEventListener('click', () => mapController?.zoomBy(-1));
     element<HTMLButtonElement>('north-up').addEventListener('click', () => mapController?.resetNorth());
@@ -201,7 +225,7 @@ async function start(): Promise<void> {
       viewToggle.textContent = enabled ? '切换到 2D' : '切换到 3D';
     });
     mapController.map.on('pitch', () => {
-      const enabled = mapController?.map.getPitch() !== 0;
+      const enabled = (mapController?.map.getPitch() ?? 0) >= 10;
       viewToggle.setAttribute('aria-pressed', String(enabled));
       viewToggle.textContent = enabled ? '切换到 2D' : '切换到 3D';
     });
@@ -233,3 +257,4 @@ window.addEventListener('keydown', (event) => {
 });
 
 void start();
+renderMapLegend();

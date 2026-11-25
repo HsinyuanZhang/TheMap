@@ -16,20 +16,22 @@ export interface MapDatasets {
   labels: Dataset;
   trees: Dataset;
   surface: Dataset;
+  terrain: Dataset;
+  overview: Dataset;
 }
 
 export type DatasetName = keyof MapDatasets;
 export type DatasetFetcher = (url: string) => Promise<unknown>;
 
 export const initialDatasetNames = [
-  'land', 'districts', 'roads', 'metro_lines', 'metro_stations', 'pois', 'labels', 'boundaries', 'parks',
+  'land', 'districts', 'roads', 'metro_lines', 'metro_stations', 'pois', 'labels', 'boundaries', 'parks', 'overview',
 ] as const satisfies readonly DatasetName[];
 
-export const lazyDatasetNames = ['blocks', 'buildings', 'trees', 'surface'] as const satisfies readonly DatasetName[];
+export const lazyDatasetNames = ['blocks', 'buildings', 'trees', 'surface', 'terrain'] as const satisfies readonly DatasetName[];
 
 export const datasetNames: readonly DatasetName[] = [
   'land', 'districts', 'parks', 'roads', 'metro_lines', 'metro_stations', 'buildings', 'pois',
-  'blocks', 'boundaries', 'labels', 'trees', 'surface',
+  'blocks', 'boundaries', 'labels', 'trees', 'surface', 'terrain', 'overview',
 ];
 
 export interface DatasetLoadResult {

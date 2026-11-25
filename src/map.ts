@@ -28,6 +28,9 @@ import {
   type CenterBounds,
 } from './map-camera';
 import { buildingColorExpression, createMapStyle, createPointAnnotations } from './map-style';
+import { applyMapRenderState, mapRenderState } from './map-render-state';
+import { layerIds, type LayerGroup } from './map-layer-groups';
+import { createRegionalBlockPattern } from './block-patterns';
 
 export type { Dataset, MapDatasets } from './dataset-loader';
 
@@ -37,14 +40,6 @@ export type MapSelection =
 
 type SelectionHandler = (selection: MapSelection) => void;
 type ErrorHandler = (message: string) => void;
-type LayerGroup = 'metro' | 'roads' | 'buildings' | 'places';
-
-const layerIds: Record<LayerGroup, string[]> = {
-  metro: ['metro-lines', 'transfer-stations', 'normal-stations', 'station-labels'],
-  roads: ['highway-casing', 'highways', 'arterial-casing', 'arterials', 'road-labels'],
-  buildings: ['buildings-3d', 'trees-3d'],
-  places: ['landmark-markers', 'other-place-markers', 'park-labels', 'landmark-labels', 'other-place-labels'],
-};
 
 const longitudeScale = 111.32 * Math.cos((40 * Math.PI) / 180);
 const latitudeScale = 110.574;
@@ -99,7 +94,7 @@ function findById(dataset: Dataset, id: string): Feature<Geometry, Record<string
     Feature<Geometry, Record<string, unknown>>[];
 }
 
-function setVisibility(map: MapLibreMap, layerIds: string[], visible: boolean): void {
+function setVisibility(map: MapLibreMap, layerIds: readonly string[], visible: boolean): void {
   for (const layerId of layerIds) {
     if (map.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', visible ? 'visible' : 'none');
   }
@@ -123,6 +118,7 @@ export class MapController {
   private constrainingCenter = false;
   private isOverview = true;
   private selectedId: string | undefined;
+  private showAllBuildings = false;
 
   constructor(
     container: HTMLElement,
@@ -153,10 +149,16 @@ export class MapController {
       attributionControl: false,
       canvasContextAttributes: { antialias: true },
     });
+    this.map.on('styleimagemissing', ({ id }) => {
+      if (this.map.hasImage(id)) return;
+      const image = createRegionalBlockPattern(id);
+      if (image) this.map.addImage(id, image, { pixelRatio: 1 });
+    });
     this.installCenterBounds();
     this.map.on('movestart', () => {
       if (!this.applyingLayout) this.isOverview = false;
     });
+    this.map.on('pitch', () => this.applyRenderingState());
     this.map.addControl(new ScaleControl({ maxWidth: 120, unit: 'metric' }), 'bottom-left');
     this.ready = new Promise((resolve) => {
       this.map.once('load', () => {
@@ -247,8 +249,8 @@ export class MapController {
 
   private installHitTesting(): void {
     const clickableLayers = [
-      'transfer-stations', 'normal-stations', 'landmark-markers', 'other-place-markers',
-      'buildings-3d', 'parks-fill', 'arterials', 'highways', 'district-fill', 'land-fill',
+      'transfer-stations', 'normal-stations', 'landmark-markers', 'historic-markers', 'other-place-markers',
+      'buildings-flat', 'buildings-3d', 'parks-fill', 'arterials', 'highways', 'district-fill', 'land-fill',
     ];
     const findClickable = (point: MapMouseEvent['point']): { kind: MapSelection['kind']; id: string } | undefined => {
       for (const layerId of clickableLayers) {
@@ -279,25 +281,51 @@ export class MapController {
     if (name === 'pois' || name === 'metro_stations') {
       (this.map.getSource('annotations') as GeoJSONSource | undefined)?.setData(createPointAnnotations(this.datasets));
     }
+    this.applyRenderingState();
     if (shouldRefitOverview) this.fitInitialBounds();
   }
 
   setSelectedId(id: string | undefined): void {
     this.selectedId = id;
-    if (this.map.getLayer('buildings-3d')) {
-      this.map.setPaintProperty('buildings-3d', 'fill-extrusion-color', buildingColorExpression(id));
-    }
+    this.applyRenderingState();
+  }
+
+  setShowAllBuildings(enabled: boolean): void {
+    this.showAllBuildings = enabled;
+    this.applyRenderingState();
+  }
+
+  private applyRenderingState(): void {
+    const state = mapRenderState(
+      this.map.getPitch(), this.layerVisibility.buildings, this.showAllBuildings, this.selectedId,
+    );
+    applyMapRenderState({
+      setVisibility: (layerId, visible) => setVisibility(this.map, [layerId], visible),
+      setKeyOnly: (keyOnly) => {
+        if (this.map.getLayer('buildings-3d')) {
+          this.map.setFilter('buildings-3d', keyOnly ? ['==', ['get', 'key'], 1] : null);
+        }
+      },
+      setSelectedBuildingColor: (layerId, selectedId) => {
+        if (this.map.getLayer(layerId)) {
+          const color = buildingColorExpression(selectedId);
+          this.map.setPaintProperty(layerId, layerId === 'buildings-flat' ? 'fill-color' : 'fill-extrusion-color', color);
+        }
+      },
+    }, state);
   }
 
   setLayerVisible(group: LayerGroup, visible: boolean): void {
     this.layerVisibility[group] = visible;
-    setVisibility(this.map, layerIds[group], visible);
+    if (group !== 'buildings') setVisibility(this.map, layerIds[group], visible);
+    this.applyRenderingState();
   }
 
   private applyLayerVisibility(): void {
     for (const group of Object.keys(layerIds) as LayerGroup[]) {
-      setVisibility(this.map, layerIds[group], this.layerVisibility[group]);
+      if (group !== 'buildings') setVisibility(this.map, layerIds[group], this.layerVisibility[group]);
     }
+    this.applyRenderingState();
   }
 
   updateLayout(): void {
@@ -323,6 +351,7 @@ export class MapController {
     this.isOverview = false;
     if (!enabled) {
       this.map.easeTo({ pitch: 0, bearing: 0, padding: this.getCameraPadding(), duration: 650 });
+      this.applyRenderingState();
       return;
     }
     const target = this.datasets.pois.features.find((feature) => feature.properties?.id === 'continental-tower');
@@ -349,6 +378,7 @@ export class MapController {
     } else {
       this.map.easeTo({ pitch: view.pitch, padding: this.getCameraPadding(), duration: 650 });
     }
+    this.applyRenderingState();
   }
 
   zoomBy(delta: number): void {
