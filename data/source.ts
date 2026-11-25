@@ -372,6 +372,7 @@ export const generatedBoundaries: readonly BoundaryDefinition[] = [
 
 export const districtLabelPositions: Readonly<Record<string, readonly XY[]>> = {
   reserve: [[22, 29.5], [32, 14]],
+  uptown: [[4, 23]],
 };
 
 export const reserveTownCenters: readonly { id: string; position: XY }[] = [
