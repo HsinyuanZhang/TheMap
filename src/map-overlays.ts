@@ -2,7 +2,7 @@ import type { Feature, LineString, Position } from 'geojson';
 import type { ExpressionSpecification } from '@maplibre/maplibre-gl-style-spec';
 import type { LayerSpecification, StyleSpecification } from 'maplibre-gl';
 import type { Dataset, MapDatasets } from './dataset-loader';
-import { toKm, toLngLat } from './world-model';
+import { inRing, toKm, toLngLat } from './world-model';
 
 const expr = (value: unknown[]): ExpressionSpecification => value as ExpressionSpecification;
 const collection = (features: Dataset['features']): Dataset => ({ type: 'FeatureCollection', features });
@@ -16,6 +16,21 @@ const metroOffset = (half: number): unknown[] => ['*', ['get', 'offset'], half];
 const lineColor = expr(['match', ['get', 'id'], 'U1', METRO_COLORS.U1, 'U2', METRO_COLORS.U2, 'U3', METRO_COLORS.U3, ['get', 'color']]);
 const placeFilter = (extra: unknown[]): ExpressionSpecification => expr(['all', ['==', ['get', 'annotationType'], 'place'], extra]);
 const important = ['in', ['get', 'id'], ['literal', OVERVIEW_PLACES]];
+const neighborAnchors: Record<string, readonly [number, number]> = { ottoman: [18, 36], 'east-region': [43, 17.5] };
+
+export function tagManhattanGeometry(data: Dataset, districts: Dataset): Dataset {
+  const geometry = districts.features.find(f => f.properties.id === 'manhattan')?.geometry;
+  const boundary = geometry?.type === 'Polygon' ? [geometry.coordinates] : geometry?.type === 'MultiPolygon' ? geometry.coordinates : [];
+  const polygons = boundary.map(polygon => polygon.map(ring => ring.map(toKm)));
+  return collection(data.features.map(f => {
+    const shape = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.type === 'MultiPolygon' ? f.geometry.coordinates : [];
+    const inside = shape.length > 0 && shape.every(polygon => polygon.every(ring => ring.every(position => {
+      const [x, y] = toKm(position);
+      return polygons.some(rings => inRing(x, y, rings[0]) && !rings.slice(1).some(hole => inRing(x, y, hole)));
+    })));
+    return { ...f, properties: { ...f.properties, flatManhattan: inside ? 1 : 0 } };
+  }));
+}
 
 export function placeKind(properties: Record<string, unknown>): keyof typeof PLACE_COLORS {
   if (properties.id === 'continental-tower') return 'continental';
@@ -160,7 +175,7 @@ export function labelLayers(): LayerSpecification[] {
   return [
     district('district-labels', expr(['all', ['==', ['get', 'kind'], 'district'], ['!', east]])),
     district('reserve-east-label', expr(east), true), district('neighbor-labels', expr(['==', ['get', 'kind'], 'neighbor']), false, true),
-    { id: 'sea-labels', type: 'symbol', source: 'sea-labels', minzoom: 7.2, maxzoom: 13, layout: { 'text-field': ['get', 'name'], 'text-font': ['serif Italic', 'serif'], 'text-size': 19, 'text-letter-spacing': 0.3, 'text-rotate': -10 }, paint: { 'text-color': '#a6cbe1', 'text-opacity': 0.8, 'text-halo-color': '#10345e', 'text-halo-width': 1 } },
+    { id: 'sea-labels', type: 'symbol', source: 'sea-labels', minzoom: 7.2, maxzoom: 13, layout: { 'text-field': ['get', 'name'], 'text-font': ['DejaVu Serif Italic', 'DejaVu Serif', 'serif'], 'text-size': 19, 'text-letter-spacing': 0.3, 'text-rotate': -10 }, paint: { 'text-color': '#a6cbe1', 'text-opacity': 0.8, 'text-halo-color': '#10345e', 'text-halo-width': 1 } },
     { id: 'road-labels', type: 'symbol', source: 'roads', minzoom: 13, filter: ['all', ['==', ['get', 'class'], 'arterial'], ['!=', ['get', 'name'], '']], layout: { 'symbol-placement': 'line', 'text-field': ['get', 'name'], 'text-font': ['DejaVu Sans'], 'text-size': 10 }, paint: { 'text-color': '#654d38', 'text-halo-color': '#fbf4e0', 'text-halo-width': 1.2 } },
     badge('highway-shields', 'road-shields', 'highway-shield', expr(['get', 'id'])),
     plate('park-labels', placeFilter(['all', ['==', ['get', 'category'], '公园'], ['!', important]]), 11),
@@ -172,5 +187,9 @@ export function labelLayers(): LayerSpecification[] {
 }
 
 export function displayLabels(labels: Dataset): Dataset {
-  return collection(labels.features.map(f => ({ ...f, properties: { ...f.properties, labelX: f.geometry.type === 'Point' ? toKm(f.geometry.coordinates)[0] : 0 } })));
+  return collection(labels.features.map(f => {
+    const anchor = f.properties.kind === 'neighbor' ? neighborAnchors[String(f.properties.id)] : undefined;
+    const geometry = anchor ? { type: 'Point' as const, coordinates: toLngLat(anchor) } : f.geometry;
+    return { ...f, geometry, properties: { ...f.properties, labelX: geometry.type === 'Point' ? toKm(geometry.coordinates)[0] : 0 } };
+  }));
 }

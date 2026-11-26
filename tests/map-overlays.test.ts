@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { validateStyleMin } from '@maplibre/maplibre-gl-style-spec';
 import { datasetNames, emptyMapDatasets, type MapDatasets } from '../src/dataset-loader';
 import { createMapStyle, createPointAnnotations } from '../src/map-style';
-import { createHighwayShields, createMetroDisplay, createMetroEnds, OVERVIEW_PLACES, METRO_COLORS, LOCAL_IDEOGRAPH_FONT } from '../src/map-overlays';
+import { createHighwayShields, createMetroDisplay, createMetroEnds, displayLabels, tagManhattanGeometry, OVERVIEW_PLACES, METRO_COLORS, LOCAL_IDEOGRAPH_FONT } from '../src/map-overlays';
 import { createLabelImage, labelImageIds, labelImageOptions } from '../src/map-label-images';
 import { layerIds } from '../src/map-layer-groups';
 import { toKm, segmentDistance } from '../src/world-model';
@@ -89,6 +89,35 @@ test('shared metro detection tolerates different vertex sampling but not nearby 
   assert.ok(createMetroDisplay(lines).features.every(f => f.properties.offset === 0));
   lines.features[1] = line('U2', [[-149.99, 39.99], [-149.99, 40.01]]);
   assert.ok(createMetroDisplay(lines).features.every(f => f.properties.offset === 0));
+});
+
+test('flat geometry uses polygon metadata instead of unsupported polygon within expressions', () => {
+  const tagged = tagManhattanGeometry(data.buildings, data.districts);
+  assert.equal(tagged.features.length, data.buildings.features.length);
+  assert.ok(tagged.features.filter(f => f.properties.flatManhattan === 1 && f.properties.base === 0).length > 8000);
+  assert.ok(tagged.features.filter(f => ['airport', 'old-governors-house', 'city-hall'].includes(String(f.properties.id))).every(f => f.properties.flatManhattan === 0));
+  assert.ok(tagged.features.filter(f => f.properties.id === 'continental-tower').every(f => f.properties.flatManhattan === 1));
+  assert.ok(!('flatManhattan' in data.buildings.features[0].properties));
+  assert.deepEqual(tagManhattanGeometry(emptyMapDatasets().buildings, data.districts).features, []);
+  assert.ok(tagManhattanGeometry(data.buildings, emptyMapDatasets().districts).features.every(f => f.properties.flatManhattan === 0));
+  const style = createMapStyle('/', data);
+  for (const id of ['blocks-fill', 'building-shadows-low', 'building-shadows-high', 'buildings-flat']) {
+    const layer = style.layers.find(l => l.id === id)!;
+    assert.ok('filter' in layer && JSON.stringify(layer.filter).includes('flatManhattan'));
+    assert.ok(!JSON.stringify(layer).includes('within'));
+  }
+});
+
+test('neighbor annotations stay near the country and sea names use a valid italic font family', () => {
+  const labels = displayLabels(data.labels);
+  for (const [id, x, y] of [['ottoman', 18, 36], ['east-region', 43, 17.5]] as const) {
+    const f = labels.features.find(f => f.properties.id === id)!; assert.ok(f.geometry.type === 'Point');
+    const p = toKm(f.geometry.coordinates); assert.ok(Math.hypot(p[0] - x, p[1] - y) < 1e-8);
+    assert.notDeepEqual(f.geometry, data.labels.features.find(f => f.properties.id === id)!.geometry);
+  }
+  assert.deepEqual(displayLabels(emptyMapDatasets().labels).features, []);
+  const sea = createMapStyle('/', data).layers.find(l => l.id === 'sea-labels'); assert.ok(sea?.type === 'symbol');
+  assert.deepEqual(sea.layout?.['text-font'], ['DejaVu Serif Italic', 'DejaVu Serif', 'serif']);
 });
 
 test('Canvas label images are local and stretchable; boundary meanders are visible at overview', () => {

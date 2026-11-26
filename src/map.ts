@@ -33,7 +33,7 @@ import { layerIds, type LayerGroup } from './map-layer-groups';
 import { createRegionalBlockPattern } from './block-patterns';
 import { deferRegionalPatternLayers, registerRegionalPatternsBeforeLayers } from './regional-pattern-layers';
 import { PaintProtocol } from './paint-protocol';
-import { LOCAL_IDEOGRAPH_FONT, overlaySources, displayLabels } from './map-overlays';
+import { LOCAL_IDEOGRAPH_FONT, overlaySources, displayLabels, tagManhattanGeometry } from './map-overlays';
 import { createLabelImage, labelImageIds, labelImageOptions } from './map-label-images';
 
 export type { Dataset, MapDatasets } from './dataset-loader';
@@ -290,14 +290,11 @@ export class MapController {
     const shouldRefitOverview = shouldFitOverviewForDataset(name, this.isOverview);
     this.datasets[name] = data;
     const source = this.map.getSource(name) as GeoJSONSource | undefined;
-    source?.setData(name === 'labels' ? displayLabels(data) : data);
+    source?.setData(name === 'labels' ? displayLabels(data) : name === 'blocks' || name === 'buildings' ? tagManhattanGeometry(data, this.datasets.districts) : data);
     if (name === 'roads' || name === 'metro_lines') for (const [id, derived] of Object.entries(overlaySources(this.datasets))) {
       if (derived.type === 'geojson') (this.map.getSource(id) as GeoJSONSource | undefined)?.setData(derived.data);
     }
-    if (name === 'districts') for (const layer of createMapStyle('', this.datasets).layers) {
-      if (['blocks-fill', 'building-shadows-low', 'building-shadows-high', 'buildings-flat'].includes(layer.id)
-        && 'filter' in layer && this.map.getLayer(layer.id)) this.map.setFilter(layer.id, layer.filter);
-    }
+    if (name === 'districts') for (const id of ['blocks', 'buildings'] as const) (this.map.getSource(id) as GeoJSONSource | undefined)?.setData(tagManhattanGeometry(this.datasets[id], data));
     if (['land', 'districts', 'parks', 'roads', 'blocks', 'boundaries', 'surface', 'terrain'].includes(name)) this.painter.update(this.datasets);
     if (name === 'buildings' && this.selectedId) this.setSelectedId(this.selectedId);
     if (name === 'pois' || name === 'metro_stations') {

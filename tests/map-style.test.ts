@@ -109,7 +109,7 @@ test('rendering layers use the requested LOD and building-height expressions', (
   const flat = byId.get('buildings-flat');
   assert.equal(flat?.type, 'fill');
   assert.equal((flat?.filter as unknown[])[0], 'all');
-  assert.equal(((flat?.filter as unknown[])[1] as unknown[])[0], 'within');
+  assert.deepEqual((flat?.filter as unknown[])[1], ['==', ['get', 'flatManhattan'], 1]);
   assert.deepEqual((flat?.filter as unknown[]).at(-1), ['==', ['get', 'base'], 0]);
   assert.deepEqual(flat?.paint?.['fill-opacity'], ['interpolate', ['linear'], ['zoom'], 13.5, 0, 13.8, 1]);
   assert.equal(flat?.paint?.['fill-outline-color'], '#a99f8b');

@@ -3,7 +3,7 @@ import type { ExpressionSpecification } from '@maplibre/maplibre-gl-style-spec';
 import type { LayerSpecification, StyleSpecification } from 'maplibre-gl';
 import type { MapDatasets } from './dataset-loader';
 import { MAP_ZOOM } from './map-lod';
-import { overlaySources, displayLabels, roadLayers, metroLayers, labelLayers, OVERVIEW_PLACES, placeKind } from './map-overlays';
+import { overlaySources, displayLabels, tagManhattanGeometry, roadLayers, metroLayers, labelLayers, OVERVIEW_PLACES, placeKind } from './map-overlays';
 import { MAP_LIGHT, shadowOffset } from './map-light';
 import { FIRST_COORDINATES } from './paint-messages';
 import { SURFACE_COLORS, PAINT } from './terrain-painter';
@@ -129,9 +129,9 @@ function sourceData(datasets: MapDatasets, paintTiles: string[]): StyleSpecifica
     roads: { type: 'geojson', data: datasets.roads },
     metro_lines: { type: 'geojson', data: datasets.metro_lines },
     metro_stations: { type: 'geojson', data: datasets.metro_stations },
-    buildings: { type: 'geojson', data: datasets.buildings },
+    buildings: { type: 'geojson', data: tagManhattanGeometry(datasets.buildings, datasets.districts) },
     pois: { type: 'geojson', data: datasets.pois },
-    blocks: { type: 'geojson', data: datasets.blocks },
+    blocks: { type: 'geojson', data: tagManhattanGeometry(datasets.blocks, datasets.districts) },
     boundaries: { type: 'geojson', data: datasets.boundaries },
     labels: { type: 'geojson', data: displayLabels(datasets.labels) },
     trees: { type: 'geojson', data: datasets.trees },
@@ -144,8 +144,7 @@ function sourceData(datasets: MapDatasets, paintTiles: string[]): StyleSpecifica
 
 export function createMapStyle(baseUrl: string, datasets: MapDatasets, selectedId?: string, paintTiles = ['paint://0/{z}/{x}/{y}?revision=1&detail=9&pitch=0&buildings=1']): StyleSpecification {
   const blockTypeColor = blockTypeColorExpression();
-  const manhattan = datasets.districts.features.find(f => f.properties.id === 'manhattan');
-  const inManhattan = expression(['within', manhattan?.geometry ?? { type: 'Polygon', coordinates: [[[0, 0], [0, 0.000001], [0.000001, 0.000001], [0, 0]]] }]);
+  const inManhattan = expression(['==', ['get', 'flatManhattan'], 1]);
   const layers: LayerSpecification[] = [
     { id: 'ocean', type: 'background', paint: { 'background-color': MAP_PALETTE.water } },
     { id: 'paint-first', type: 'raster', source: 'paint-first', paint: { 'raster-fade-duration': 0 } },
