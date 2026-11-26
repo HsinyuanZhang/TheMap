@@ -29,13 +29,14 @@ function png(pixels: Pixels): Buffer {
 }
 await mkdir(output, { recursive: true });
 for (const [name, cx, cy, scale, width, height] of [
-  ['overview', 19, 17.5, 27, 1269, 952],
-  ['central', 14, 5.8, 96, 1389, 868],
-  ['harlem', 25, 16, 96, 1389, 868],
+  ['overview', 19, 17.5, 27, 1600, 1200],
+  ['central', 14, 4.5, 96, 1600, 1000],
+  ['harlem', 27, 13, 96, 1600, 1000],
+  ['initial', 19, 17.5, 2 ** 8.7 / 59.96, 512, 384],
 ] as const) {
   const pixels = paintPixels(world, { west: cx - width / 2 / scale, east: cx + width / 2 / scale,
     north: cy + height / 2 / scale, south: cy - height / 2 / scale, width, height, zoom: Math.log2(scale * 59.96) });
-  const path = resolve(output, `paint-${name}.png`);
+  const path = resolve(output, `paint-${name}-v2.png`);
   await writeFile(path, png(pixels));
   console.log(`Rendered ${path} (${width}x${height}; cx=${cx}, cy=${cy}, s=${scale})`);
 }

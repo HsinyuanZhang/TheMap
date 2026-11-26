@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { datasetNames, emptyMapDatasets, type Dataset, type MapDatasets } from '../src/dataset-loader';
 import { WorldModel, toLngLat, worldHash } from '../src/world-model';
-import { PAINT, paintPixels, tileView, lodWeights, type Pixels } from '../src/terrain-painter';
+import { PAINT, paintPixels, tileView, lodWeights, stripeCoverage, type Pixels } from '../src/terrain-painter';
 import { ByteLRU } from '../src/paint-cache';
 import { beverlyElevationAt } from '../data/generate';
 
@@ -34,6 +34,7 @@ test('dataset-backed world surfaces cover every district and airport without DOM
   for (const f of data.districts.features) assert.ok(seen.has(String(f.properties.id)), String(f.properties.id));
   for (const id of ['reserve', 'beverly']) assert.ok(seen.get(id)?.has('wood'));
   assert.ok(seen.get('reserve')?.has('town'));
+  for (const [id, expected] of Object.entries({ manhattan: 'highrise', central: 'midrise', beverly: 'lowdensity', 'st-germain': 'lowrise', harlem: 'airport', uptown: 'midrise', brooklyn: 'lowrise', 'fleet-port': 'military', reserve: 'farm' })) assert.ok(seen.get(id)?.has(expected), `${id}: ${expected}`);
   assert.equal(world.sample(11.6, 3.6).surface, 'highrise');
   for (const f of data.surface.features.filter(f => f.properties.kind === 'airport')) {
     assert.equal(f.geometry.type, 'Polygon');
@@ -54,6 +55,34 @@ test('dataset-backed world surfaces cover every district and airport without DOM
   assert.ok(worldHash(-1, 0) >= 0 && worldHash(-1, 0) < 1);
 });
 
+test('neighbors fill the northeast and extend beyond finite dataset edges as illuminated land', () => {
+  for (const [x, y, district, max] of [[19, 40, 'ottoman', 600], [44, 15, 'east-region', 370], [44, 40, 'ottoman', 600], [120, 15, 'east-region', 370], [120, 120, 'ottoman', 600]] as const) {
+    const sample = world.sample(x, y);
+    assert.equal(sample.district, district); assert.equal(sample.surface, 'foreign');
+    assert.ok(sample.elevation >= 40 && sample.elevation <= max);
+  }
+  assert.equal(world.sample(-12, 15).surface, 'sea');
+  const north = paintPixels(world, { west: 15, east: 25, south: 35, north: 42, width: 64, height: 48, zoom: 10.7 });
+  const east = paintPixels(world, { west: 40, east: 48, south: 12, north: 20, width: 64, height: 48, zoom: 10.7 });
+  const channel = (p: Pixels, c: number): number => p.data.reduce((sum, v, i) => sum + (i % 4 === c ? v : 0), 0) / (p.width * p.height);
+  assert.ok(channel(north, 0) > channel(north, 2), 'arid land is brown, not ocean blue');
+  assert.ok(channel(east, 1) > channel(east, 2), 'eastern hills are green, not ocean blue');
+  assert.ok(new Set(north.data).size > 80, 'mountain relief is visible');
+});
+
+test('agricultural texture uses seven tones, bounded rectangular rows and pixel-filtered streets', () => {
+  const tones = new Set<number>();
+  for (let y = 12; y < 33; y += 0.13) for (let x = 29; x < 35; x += 0.13) {
+    const field = world.fieldAt(x, y); tones.add(field.tone);
+    assert.ok(field.edge >= -1e-10 && field.edge < 0.25);
+    assert.deepEqual(field, world.fieldAt(x, y));
+  }
+  assert.deepEqual([...tones].sort(), [0, 1, 2, 3, 4, 5, 6]);
+  for (const x of [-12.4, -1, 0, 0.7, 25]) assert.ok(Math.abs(stripeCoverage(x, 0.25, 0.02, 1) - 0.08) < 1e-10);
+  assert.equal(stripeCoverage(0.01, 0.25, 0.02, 0.01), 1);
+  assert.equal(stripeCoverage(0.1, 0.25, 0.02, 0.01), 0);
+});
+
 test('same tile paints identical RGBA pixels including the glyphs', () => {
   const view = tileView(...tileAt(13, 19, 6));
   const a = paintPixels(world, view), b = paintPixels(world, view);
@@ -61,6 +90,8 @@ test('same tile paints identical RGBA pixels including the glyphs', () => {
   assert.equal(a.data.length, 512 * 512 * 4);
   assert.ok(new Set(a.data).size > 80);
   assert.deepEqual(a.data, paintPixels(world, view, 64).data, '48 px bleed must contain complete glyphs');
+  const urban = tileView(...tileAt(13, 12, 5));
+  assert.deepEqual(paintPixels(world, urban).data, paintPixels(world, urban, 96).data, 'snapped street blocks must not depend on the tile extent');
 });
 
 test('three adjacent coast, urban and woodland tile pairs differ by less than 3% along seams', () => {

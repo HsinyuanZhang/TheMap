@@ -8,7 +8,7 @@ export const SURFACE_COLORS: Record<Surface, readonly [number, number, number]> 
   lowrise: [211, 197, 171], midrise: [199, 197, 187], highrise: [176, 190, 201], town: [215, 193, 158],
   park: [148, 177, 113], military: [155, 169, 153], airport: [153, 176, 112], foreign: [151, 142, 113], lake: [78, 135, 155], pier: [154, 139, 114],
 };
-const FIELDS = [[195, 187, 115], [173, 183, 114], [203, 193, 132], [144, 165, 102], [190, 171, 111], [181, 191, 137], [163, 168, 111]];
+const FIELDS = [[195, 187, 115], [173, 183, 114], [203, 193, 132], [113, 149, 83], [169, 137, 91], [181, 191, 137], [163, 168, 111]];
 export interface PaintView { west: number; north: number; east: number; south: number; width: number; height: number; zoom: number; pitch?: number; buildings?: boolean; }
 export interface Pixels { width: number; height: number; data: Uint8ClampedArray; }
 export function tileView(z: number, x: number, y: number, zoom = z): PaintView {
@@ -22,9 +22,16 @@ export function lodWeights(zoom: number): { glyphs: number; manhattan: number } 
 }
 const fract = (n: number): number => n - Math.floor(n);
 const blend = (a: number[], b: readonly number[], amount: number): number[] => a.map((v, i) => v + (b[i] - v) * amount);
+const clamp = (v: number): number => Math.max(0, Math.min(1, v));
+export function stripeCoverage(position: number, period: number, stripe: number, footprint: number): number {
+  const integral = (v: number): number => Math.floor(v / period) * stripe + Math.min(fract(v / period) * period, stripe);
+  const coverage = clamp((integral(position + footprint / 2) - integral(position - footprint / 2)) / footprint);
+  return coverage < 1e-12 ? 0 : coverage > 1 - 1e-12 ? 1 : coverage;
+}
 
 class Brush {
-  constructor(readonly data: Uint8ClampedArray, readonly width: number, readonly height: number) {}
+  private readonly coverage: Float64Array;
+  constructor(readonly data: Uint8ClampedArray, readonly width: number, readonly height: number) { this.coverage = new Float64Array(width); }
   pixel(x: number, y: number, color: readonly number[], alpha = 1): void {
     x = Math.floor(x); y = Math.floor(y);
     if (x < 0 || y < 0 || x >= this.width || y >= this.height) return;
@@ -39,14 +46,21 @@ class Brush {
   }
   polygon(points: readonly XY[], color: readonly number[], alpha = 1): void {
     const min = Math.max(0, Math.floor(Math.min(...points.map(p => p[1])))), max = Math.min(this.height - 1, Math.ceil(Math.max(...points.map(p => p[1]))));
+    const left = Math.max(0, Math.floor(Math.min(...points.map(p => p[0])))), right = Math.min(this.width, Math.ceil(Math.max(...points.map(p => p[0]))));
     for (let y = min; y <= max; y++) {
-      const cuts: number[] = [];
-      for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
-        const a = points[i], b = points[j];
-        if ((a[1] > y + 0.5) !== (b[1] > y + 0.5)) cuts.push(a[0] + (y + 0.5 - a[1]) * (b[0] - a[0]) / (b[1] - a[1]));
+      this.coverage.fill(0, left, right);
+      for (const offset of [0.125, 0.375, 0.625, 0.875]) {
+        const cuts: number[] = [];
+        for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+          const a = points[i], b = points[j];
+          if ((a[1] > y + offset) !== (b[1] > y + offset)) cuts.push(a[0] + (y + offset - a[1]) * (b[0] - a[0]) / (b[1] - a[1]));
+        }
+        cuts.sort((a, b) => a - b);
+        for (let i = 0; i + 1 < cuts.length; i += 2) for (let x = Math.max(left, Math.floor(cuts[i])); x < Math.min(right, Math.ceil(cuts[i + 1])); x++) {
+          this.coverage[x] += Math.max(0, Math.min(x + 1, cuts[i + 1]) - Math.max(x, cuts[i])) / 4;
+        }
       }
-      cuts.sort((a, b) => a - b);
-      for (let i = 0; i + 1 < cuts.length; i += 2) for (let x = Math.max(0, Math.ceil(cuts[i] - 0.5)); x < Math.min(this.width, cuts[i + 1] - 0.5); x++) this.pixel(x, y, color, alpha);
+      for (let x = left; x < right; x++) if (this.coverage[x]) this.pixel(x, y, color, alpha * this.coverage[x]);
     }
   }
   rect(x: number, y: number, w: number, h: number, color: readonly number[], alpha = 1): void {
@@ -64,46 +78,57 @@ export function paintPixels(world: WorldModel, view: PaintView, bleed: number = 
   const lightUp = Math.sin(MAP_LIGHT.altitude * Math.PI / 180), lightSide = Math.cos(MAP_LIGHT.altitude * Math.PI / 180);
   for (let py = 0; py < height; py++) for (let px = 0; px < width; px++) {
     const x = west + (px + 0.5) / sx, y = north - (py + 0.5) / sy, sample = world.sample(x, y);
-    let color = [...SURFACE_COLORS[sample.surface]], texture = (noise(x * 24, y * 24) - 0.5) * 5;
+    const detail = smooth((scale - 9) / 22), footprint = 1 / scale;
+    let color = [...SURFACE_COLORS[sample.surface]], texture = (noise(x * 3, y * 3) - 0.5) * 3;
     if (sample.surface === 'sea') {
-      const coast = world.coastDistance(x, y), shallow = Math.exp(-coast / 1.9);
+      const coast = world.coastDistance(x, y), shallow = 1 - smooth(coast / 5);
       color = blend(color, [52, 122, 168], shallow);
-      color = blend(color, [117, 170, 176], smooth(1 - coast / 0.5) * 0.6);
-      texture += (noise(x * 0.35, y * 0.35) - 0.5) * 10 + Math.sin(y * 70 + noise(x, y) * 2) * 1.3;
+      color = blend(color, [128, 187, 192], smooth(1 - coast / 0.5) * 0.68);
+      texture = (noise(x * 0.28, y * 0.28) - 0.5) * 8 + Math.sin(y * 17 + noise(x * 0.4, y * 0.4) * 2) * 0.7 * smooth((scale - 5) / 18);
+      color = color.map(v => v * (1 - Math.min(0.06, Math.hypot(x - 19, y - 17.5) / 650)));
     } else {
-      const ex = (world.elevationAt(x + 0.04, y, sample.district) - world.elevationAt(x - 0.04, y, sample.district)) * 7 / 80;
-      const ey = (world.elevationAt(x, y + 0.04, sample.district) - world.elevationAt(x, y - 0.04, sample.district)) * 7 / 80;
+      const step = Math.max(0.025, footprint * 0.6);
+      const elevation = (a: number, b: number): number => world.shadingElevationAt(a, b, sample.district);
+      const ex = (elevation(x + step, y) - elevation(x - step, y)) * 7 / (step * 2000);
+      const ey = (elevation(x, y + step) - elevation(x, y - step)) * 7 / (step * 2000);
       const illumination = (-ex * MAP_LIGHT.east * lightSide - ey * MAP_LIGHT.north * lightSide + lightUp) / Math.hypot(ex, ey, 1);
-      const shade = 0.67 + 0.48 * illumination;
-      if (sample.surface === 'wood') color = blend(color, [143, 160, 77], (noise(x * 2, y * 2) * 0.6 + noise(x * 9, y * 9) * 0.4 * smooth((scale - 12) / 35)) * 0.7);
-      if (sample.surface === 'farm') {
-        const field = worldHash(sample.field, sample.tone, 21);
-        color = [...FIELDS[Math.floor(field * FIELDS.length)]];
-        const furrow = y > 25 ? x + 0.03 * Math.sin(y * 3) : y + 0.03 * Math.sin(x * 3);
-        texture += Math.sin(furrow * 170) * Math.min(3, scale / 40);
-        if (sample.fieldEdge < 0.012) color = color.map(v => v * 0.86);
+      const shade = sample.surface === 'foreign' ? 0.68 + 0.64 * illumination : 0.82 + 0.35 * illumination;
+      if (sample.surface === 'wood') {
+        const mottle = noise(x * 2.5, y * 2.5) * 0.35 + noise(x * 9, y * 9) * 0.65 * detail;
+        color = blend([30, 67, 39], [103, 132, 57], mottle);
+        texture += (noise(x * 19, y * 19) - 0.5) * 9 * smooth((scale - 28) / 50);
       }
-      if (sample.surface === 'foreign') color = sample.district === 'ottoman' ? [164, 147, 115] : [143, 161, 135];
+      if (sample.surface === 'farm') {
+        color = [...FIELDS[sample.tone]];
+        const field = world.fieldAt(x, y), furrow = y > 25 ? field.u : field.v;
+        texture += (stripeCoverage(furrow, 0.027, 0.005, footprint) - 0.005 / 0.027) * 25;
+        color = blend(color, [85, 107, 56], clamp((0.009 - sample.fieldEdge) * scale + 0.5) * 0.72);
+      }
+      if (sample.surface === 'foreign') color = sample.district === 'ottoman' ? [150, 133, 98] : [79, 97, 77];
+      if (sample.surface === 'military') color = blend([134, 151, 134], [174, 183, 157], noise(x * 0.8, y * 0.8) * 0.7 + noise(x * 3.2, y * 3.2) * 0.3);
+      if (sample.surface === 'lowdensity') color = blend([199, 190, 169], color, 0.2 + 0.8 * smooth(world.urbanEdgeDistance(x, y) / 0.65));
       if (['lowrise', 'midrise', 'highrise', 'town'].includes(sample.surface)) {
-        const a = sample.angle, u = x * Math.cos(a) + y * Math.sin(a), v = -x * Math.sin(a) + y * Math.cos(a);
-        const cellW = sample.surface === 'lowrise' || sample.surface === 'town' ? 0.15 : 0.22, cellH = 0.14;
-        const fu = fract(u / cellW), fv = fract(v / cellH);
-        if (fu < 0.12 || fv < 0.14) color = blend(color, [240, 232, 213], 0.82 * smooth((scale - 8) / 25));
-        else texture += (worldHash(Math.floor(u / cellW), Math.floor(v / cellH)) - 0.5) * 18 * smooth((scale - 8) / 25);
+        const cell = world.streetAt(x, y, sample.angle, sample.quarter), tone = (sample.quarter - 0.5) * 15;
+        color = [199 + tone, 190 + tone * 0.8, 169 + tone * 0.6];
+        const roofs = [[172, 144, 119], [167, 160, 143], [188, 163, 130], [142, 153, 147], [175, 132, 112]];
+        const roof = roofs[Math.floor(worldHash(cell.col, cell.row, Math.floor(sample.quarter * 10000)) * roofs.length)];
+        color = blend(color, roof, detail * 0.48);
+        const streetU = stripeCoverage(cell.u, cell.w, 0.018, footprint), streetV = stripeCoverage(cell.v, cell.h, 0.016, footprint);
+        color = blend(color, [240, 232, 212], (1 - (1 - streetU) * (1 - streetV)) * 0.95);
+        texture += (noise(x * 12, y * 12) - 0.5) * 7 * detail;
       }
       if (sample.surface === 'airport') {
-        if (sample.part === 'runway') { color = [66, 73, 79]; if (fract(x * 16 + y * 2.25) < 0.22) color = blend(color, [215, 215, 197], 0.6); }
-        if (sample.part === 'airport-apron') color = [187, 186, 171];
-        if (sample.part === 'airport-taxiway') color = [133, 137, 133];
-        if (sample.part === 'airport-pier') color = [210, 210, 196];
-        if (sample.part === 'airport-aircraft') color = [239, 235, 217];
+        if (sample.part === 'runway') color = [76, 84, 83];
+        const airportColors: Record<string, number[]> = { 'airport-apron': [187, 186, 171], 'airport-taxiway': [133, 137, 133], 'airport-pier': [210, 210, 196], 'airport-aircraft': [239, 235, 217] };
+        if (airportColors[sample.part]) color = blend(color, airportColors[sample.part], weights.glyphs);
+        texture += (noise(x * 5, y * 5) - 0.5) * 8;
       }
       color = color.map(v => v * shade);
       if (sample.district !== 'ottoman' && sample.district !== 'east-region') {
         const coast = world.coastDistance(x, y);
         if (coast < 0.14) color = blend(color, [211, 205, 166], (1 - coast / 0.14) * 0.65);
         if (coast < 0.6 / scale) color = blend(color, [243, 235, 207], 0.9);
-      } else color = blend([...SURFACE_COLORS.sea], color, 0.4);
+      }
     }
     const index = (py * width + px) * 4;
     for (let c = 0; c < 3; c++) data[index + c] = color[c] + texture;
@@ -112,8 +137,8 @@ export function paintPixels(world: WorldModel, view: PaintView, bleed: number = 
   const tree = (x: number, y: number, size: number, r: number, alpha: number): void => {
     brush.ellipse(x + size * 0.5, y + size * 0.35, size, size * 0.55, [38, 61, 39], alpha * 0.24);
     const colors = [[51, 99, 54], [67, 116, 53], [90, 129, 59], [115, 141, 67]];
-    brush.ellipse(x, y - size * 0.5, size * 0.75, size, colors[Math.floor(r * 4)], alpha);
-    brush.ellipse(x - size * 0.22, y - size * 0.83, size * 0.4, size * 0.48, [168, 182, 98], alpha * 0.55);
+    brush.ellipse(x, y - size * 0.35, size, size * 0.86, colors[Math.floor(r * 4)], alpha);
+    brush.ellipse(x - size * 0.26, y - size * 0.63, size * 0.5, size * 0.42, [168, 182, 98], alpha * 0.5);
   };
   const house = (x: number, y: number, size: number, r: number, alpha: number): void => {
     brush.rect(x - size * 0.5 + 2, y - size * 0.35 + 2, size, size * 0.75, [55, 64, 48], alpha * 0.25);
@@ -130,36 +155,62 @@ export function paintPixels(world: WorldModel, view: PaintView, bleed: number = 
     brush.rect(x - w / 2, y - h, w, Math.max(1, size * 0.2), [205, 214, 208], alpha);
     for (let yy = y - h + 3; yy < y - 1; yy += 3) brush.rect(x - w * 0.3, yy, w * 0.5, 0.7, [189, 203, 198], alpha * 0.6);
   };
+  const roof = (x: number, y: number, w: number, h: number, angle: number, color: number[], rise: number, alpha: number): void => {
+    const c = Math.cos(angle), s = Math.sin(angle);
+    const corners: XY[] = [[-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2]];
+    const points = corners.map(([a, b]): XY => [x + a * c - b * s, y - a * s - b * c]);
+    brush.polygon(points.map(p => [p[0] - MAP_LIGHT.east * rise, p[1] + MAP_LIGHT.north * rise]), [65, 65, 53], alpha * 0.25);
+    brush.polygon(points, color.map(v => v * 0.8), alpha);
+    brush.polygon(points.map(p => [p[0], p[1] - rise]), color, alpha);
+    brush.polygon([points[0], points[1], [points[1][0], points[1][1] - rise], [points[0][0], points[0][1] - rise]], color.map(v => Math.min(255, v + 12)), alpha);
+  };
   const sites = (step: number, salt: number, draw: (x: number, y: number, r: number) => void): void => {
     const points: Array<{ x: number; y: number; r: number }> = [];
-    for (let i = Math.floor(Math.max(west, world.bounds[0] - 2) / step) - 1; i <= Math.ceil(Math.min(west + width / sx, world.bounds[2] + 2) / step) + 1; i++) {
-      for (let j = Math.floor(Math.max(north - height / sy, world.bounds[1] - 2) / step) - 1; j <= Math.ceil(Math.min(north, world.bounds[3] + 2) / step) + 1; j++) {
+    for (let i = Math.floor(Math.max(west - 0.5, world.bounds[0] - 2) / step) - 1; i <= Math.ceil(Math.min(west + width / sx + 0.5, world.bounds[2] + 2) / step) + 1; i++) {
+      for (let j = Math.floor(Math.max(north - height / sy - 0.5, world.bounds[1] - 2) / step) - 1; j <= Math.ceil(Math.min(north + 0.5, world.bounds[3] + 2) / step) + 1; j++) {
         points.push({ x: (i + 0.15 + worldHash(i, j, salt) * 0.7) * step, y: (j + 0.15 + worldHash(i, j, salt + 1) * 0.7) * step, r: worldHash(i, j, salt + 2) });
       }
     }
     points.sort((a, b) => b.y - a.y || a.x - b.x);
     for (const p of points) draw(p.x, p.y, p.r);
   };
-  if (weights.glyphs) sites(0.18, 7, (x, y, r) => {
+  if (weights.glyphs) sites(0.11, 7, (x, y, r) => {
     const s = world.sample(x, y), [px, py] = screen(x, y), a = weights.glyphs;
-    if (a && (s.surface === 'wood' || s.surface === 'park' && r > 0.5)) tree(px, py, Math.min(12, scale * (0.06 + r * 0.035)), r, a);
-    if (a && s.surface === 'lowdensity' && world.roadClear(x, y)) {
-      if (r < 0.4) tree(px, py, Math.min(10, scale * 0.06), r, a); else if (view.buildings !== false) house(px, py, Math.min(11, scale * 0.075), r, a);
-    }
+    if (a && (s.surface === 'wood' || s.surface === 'park' && r > 0.6)) tree(px, py, Math.min(12, scale * (0.045 + r * 0.045)), r, a);
   });
-  if (view.buildings !== false) sites(0.18, 17, (x, y, r) => {
+  if (weights.glyphs) sites(0.18, 23, (x, y, r) => {
     const s = world.sample(x, y), [px, py] = screen(x, y);
-    let a = weights.glyphs * (s.district === 'manhattan' ? weights.manhattan : 1);
-    if (!world.roadClear(x, y) || ['sea', 'wood', 'farm', 'foreign', 'military'].includes(s.surface)) return;
-    const size = Math.min(s.surface === 'highrise' ? 12 : 18, Math.max(4, scale * 0.12));
+    if (s.surface !== 'lowdensity' || !world.roadClear(x, y)) return;
+    if (r < 0.4) tree(px, py, Math.min(10, scale * 0.06), r, weights.glyphs);
+    else if (view.buildings !== false) house(px, py, Math.min(11, scale * 0.075), r, weights.glyphs);
+  });
+  const paintedBlocks = new Set<string>();
+  if (view.buildings !== false && weights.glyphs) sites(0.14, 17, (x, y) => {
+    let s = world.sample(x, y);
+    if (!['lowrise', 'town', 'midrise', 'highrise'].includes(s.surface)) return;
+    const cell = world.streetAt(x, y, s.angle, s.quarter), key = [s.quarter, cell.col, cell.row].join('/');
+    if (paintedBlocks.has(key)) return;
+    const center = world.sample(cell.x, cell.y);
+    if (center.quarter !== s.quarter || center.surface !== s.surface || !world.roadClear(cell.x, cell.y)) return;
+    paintedBlocks.add(key); s = center;
+    const [px, py] = screen(cell.x, cell.y), r = worldHash(cell.col, cell.row, Math.floor(s.quarter * 10000));
+    const a = weights.glyphs * (s.district === 'manhattan' ? weights.manhattan : 1);
+    const size = Math.min(12, Math.max(4, scale * 0.1));
     if ((s.surface === 'highrise' || s.surface === 'midrise') && (view.pitch ?? 0) <= 30) {
-      if (s.surface === 'highrise' && r > 0.85) a = Math.max(a, (1 - weights.glyphs) * 0.8);
-      if (a) { tower(px, py, size, r, s.surface === 'highrise', a); tower(px + size * 0.8, py + size * 0.3, size * 0.65, 1 - r, false, a); }
+      if (a && s.surface === 'highrise') { tower(px, py, size, r, true, a); tower(px + size * 0.8, py + size * 0.3, size * 0.65, 1 - r, false, a); }
+      if (a && s.surface === 'midrise') {
+        const palette = [[182, 183, 172], [199, 190, 169], [163, 168, 163], [207, 202, 184]];
+        for (let i = 0; i < 2; i++) {
+          const dx = (i - 0.5) * cell.w * 0.43;
+          roof(px + dx * sx * Math.cos(s.angle), py - dx * sy * Math.sin(s.angle), Math.min(26, cell.w * sx * 0.37), Math.min(23, cell.h * sy * 0.68), s.angle, palette[Math.floor(r * 4)], 2 + r * 4, a);
+        }
+      }
     }
     if (a && (s.surface === 'lowrise' || s.surface === 'town')) {
       for (let row = 0; row < 2; row++) for (let col = 0; col < 3; col++) {
-        const dx = (col - 1) * 0.055, dy = (row - 0.5) * 0.065;
-        house(px + (dx * Math.cos(s.angle) - dy * Math.sin(s.angle)) * sx, py - (dx * Math.sin(s.angle) + dy * Math.cos(s.angle)) * sy, size * 0.5, r, a);
+        const dx = (col - 1) * cell.w * 0.27, dy = (row - 0.5) * cell.h * 0.42;
+        const palette = [[156, 87, 64], [176, 114, 77], [145, 128, 100], [113, 128, 118]];
+        roof(px + (dx * Math.cos(s.angle) - dy * Math.sin(s.angle)) * sx, py - (dx * Math.sin(s.angle) + dy * Math.cos(s.angle)) * sy, Math.min(12, cell.w * sx * 0.2), Math.min(10, cell.h * sy * 0.28), s.angle, palette[Math.floor(worldHash(cell.col * 3 + col, cell.row * 2 + row, 72) * 4)], 1.5, a);
       }
     }
   });
@@ -178,12 +229,20 @@ export function paintPixels(world: WorldModel, view: PaintView, bleed: number = 
     brush.polygon([[px - w, py], [px - w, py - length * 0.7], [px, py - length], [px + w, py - length * 0.7], [px + w, py]], [129, 148, 150]);
     brush.rect(px - w * 0.5, py - length * 0.65, w, length * 0.35, [193, 201, 189]);
   });
-  for (const building of view.buildings === false ? [] : world.airportBuildings) {
+  for (const building of view.buildings === false || !weights.glyphs ? [] : world.airportBuildings) {
     const ring = building.rings[0].map(p => screen(p[0], p[1]));
     brush.polygon(ring.map(p => [p[0] + 2, p[1] + 3]), [55, 65, 61], 0.25);
-    brush.polygon(ring, [221, 220, 201]);
+    brush.polygon(ring, [221, 220, 201], weights.glyphs);
+  }
+  const horizontal = new Uint8ClampedArray(data.length);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) for (let c = 0; c < 4; c++) {
+    const i = (y * width + x) * 4 + c;
+    horizontal[i] = (data[(y * width + Math.max(0, x - 1)) * 4 + c] + 2 * data[i] + data[(y * width + Math.min(width - 1, x + 1)) * 4 + c]) / 4;
   }
   const cropped = new Uint8ClampedArray(view.width * view.height * 4);
-  for (let y = 0; y < view.height; y++) cropped.set(data.subarray(((y + bleed) * width + bleed) * 4, ((y + bleed) * width + bleed + view.width) * 4), y * view.width * 4);
+  for (let y = 0; y < view.height; y++) for (let x = 0; x < view.width; x++) for (let c = 0; c < 4; c++) {
+    const px = x + bleed, py = y + bleed;
+    cropped[(y * view.width + x) * 4 + c] = (horizontal[(Math.max(0, py - 1) * width + px) * 4 + c] + 2 * horizontal[(py * width + px) * 4 + c] + horizontal[(Math.min(height - 1, py + 1) * width + px) * 4 + c]) / 4;
+  }
   return { width: view.width, height: view.height, data: cropped };
 }
