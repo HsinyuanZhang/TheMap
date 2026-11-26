@@ -35,7 +35,7 @@ test('Phase 2 style validates against the installed MapLibre style specification
 test('style includes local sky, light, generated borders, and all dataset sources', () => {
   const style = createMapStyle('/map/', emptyMapDatasets());
   assert.equal(style.glyphs, '/map/fonts/{fontstack}/{range}.pbf');
-  assert.deepEqual(style.light, { anchor: 'map', position: [1.4, 215, 42], intensity: 0.42, color: '#fff4e2' });
+  assert.deepEqual(style.light, { anchor: 'map', position: [1.4, 315, 42], intensity: 0.42, color: '#fff4e2' });
   assert.deepEqual(style.sky, {
     'sky-color': '#bcd6e8',
     'horizon-color': '#f4ece0',
@@ -253,19 +253,19 @@ test('park labels use one existing point annotation per park, not polygon placem
   assert.ok(parkPoints.every((feature) => feature.geometry.type === 'Point'));
 });
 
-test('new LOD appearances fade from zero over half a zoom level', () => {
+test('LOD appearances fade from zero, with blocks cross-fading from the hex atlas', () => {
   const style = createMapStyle('/', emptyMapDatasets());
   const byId = new Map(style.layers.map((layer) => [layer.id, layer]));
-  const fades: Array<[string, string, number, number]> = [
+  const fades: Array<[string, string, number, number, number?]> = [
     ['farms', 'fill-opacity', 11, 0.9],
-    ['town-blocks-fill', 'fill-opacity', 10, 1],
+    ['town-blocks-fill', 'fill-opacity', 11, 1, 1],
     ['rural-roads', 'line-opacity', 11, 0.82],
-    ['superblocks', 'fill-opacity', 10, 1],
+    ['superblocks', 'fill-opacity', 11, 1, 1],
     ['superblock-texture', 'fill-opacity', 11.5, 0.32],
     ['parks-fill', 'fill-opacity', 9.5, 0.96],
     ['lake-fill', 'fill-opacity', 9.5, 0.95],
     ['parks-outline', 'line-opacity', 9.5, 1],
-    ['blocks-fill', 'fill-opacity', 10, 1],
+    ['blocks-fill', 'fill-opacity', 11, 1, 1],
     ['piers', 'fill-opacity', 11.5, 0.95],
     ['arterial-casing', 'line-opacity', 9.5, 0.97],
     ['arterials', 'line-opacity', 9.5, 0.94],
@@ -282,12 +282,12 @@ test('new LOD appearances fade from zero over half a zoom level', () => {
     ['other-place-labels', 'text-opacity', 12.5, 1],
     ['park-labels', 'text-opacity', 9.5, 1],
   ];
-  for (const [layerId, property, minZoom, target] of fades) {
+  for (const [layerId, property, minZoom, target, span = 0.5] of fades) {
     const layer = byId.get(layerId);
     assert.ok(layer && 'paint' in layer && layer.paint, layerId);
     const expression = (layer.paint as unknown as Record<string, unknown>)[property];
     assert.equal(opacityAtZoom(expression, minZoom), 0, `${layerId}.${property} at its LOD threshold`);
-    assert.equal(opacityAtZoom(expression, minZoom + 0.5), target, `${layerId}.${property} after its fade`);
+    assert.equal(opacityAtZoom(expression, minZoom + span), target, `${layerId}.${property} after its fade`);
   }
 });
 

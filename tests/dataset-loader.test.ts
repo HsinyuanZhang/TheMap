@@ -9,7 +9,7 @@ import {
 
 test('dataset groups keep large GeoJSON out of the initial request set', () => {
   assert.deepEqual(initialDatasetNames, [
-    'land', 'districts', 'roads', 'metro_lines', 'metro_stations', 'pois', 'labels', 'boundaries', 'parks', 'overview',
+    'land', 'districts', 'roads', 'metro_lines', 'metro_stations', 'pois', 'labels', 'boundaries', 'parks', 'overview', 'atlas',
   ]);
   assert.deepEqual(lazyDatasetNames, ['blocks', 'buildings', 'trees', 'surface', 'terrain']);
 });

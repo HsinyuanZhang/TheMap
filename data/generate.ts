@@ -7,6 +7,7 @@ import {
   closeRing, distanceToSegment, pointInRing, polygonArea, rectangleRing, reversePath,
 } from "./geometry";
 import { routeOnRoads } from "./metro";
+import { generateAtlas } from "./atlas";
 import {
   beverlyHills, coastline, coastlineYAtX, districts, generatedBoundaries, land, parks, points,
   districtLabelPositions, reserveTownCenters, roads as sourceRoads, stations, transitLines, urbanGrid,
@@ -2216,8 +2217,15 @@ export function generateData(): Record<string, Collection> {
   ));
   const treeFeatures = generateTrees();
   const surfaceFeatures = generateSurfaces(woods.features, woods.rings, towns);
+  for (const item of surfaceFeatures) {
+    if (item.properties?.kind !== "farm" || item.geometry.type !== "Polygon") continue;
+    const vertices = item.geometry.coordinates[0]!.map(localFromCoordinate);
+    item.properties.furrow = vertices.reduce((sum, [, y]) => sum + y, 0) / vertices.length > 25 ? "north" : "east";
+  }
   const terrainFeatures = [...terrain.bands, ...terrain.contours];
   const overviewFeatures = [...terrain.bands, ...woods.features];
+  const atlasFeatures = generateAtlas(landFeatures.find((item) => item.properties?.kind === "monaco")!,
+    districtFeatures, surfaceFeatures, terrain.bands, blockFeatures, beverlyElevationAt);
   return {
     land: collection(landFeatures),
     districts: collection(districtFeatures),
@@ -2231,6 +2239,7 @@ export function generateData(): Record<string, Collection> {
     trees: collection(treeFeatures),
     terrain: collection(terrainFeatures),
     overview: collection(overviewFeatures),
+    atlas: collection(atlasFeatures),
     labels: collection(generateLabels()),
     boundaries: collection(boundaryFeatures),
     surface: collection(surfaceFeatures),

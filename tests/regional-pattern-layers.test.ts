@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { emptyMapDatasets } from '../src/dataset-loader';
 import { createMapStyle } from '../src/map-style';
-import { regionalBlockPatternIds } from '../src/block-patterns';
+import { regionalPatternIds } from '../src/block-patterns';
 import { deferRegionalPatternLayers, registerRegionalPatternsBeforeLayers } from '../src/regional-pattern-layers';
 
 test('regional Canvas images are installed before their layers on initial load and retries', () => {
@@ -12,6 +12,10 @@ test('regional Canvas images are installed before their layers on initial load a
   const deferred = deferRegionalPatternLayers(sourceStyle);
   assert.ok(textureIndex >= 0);
   assert.ok(!deferred.style.layers.some((layer) => layer.id === 'superblock-texture'));
+  for (const id of ['wood-canopy', 'wood-clumps', 'farm-furrows']) {
+    assert.ok(deferred.layers.some(({ layer }) => layer.id === id));
+    assert.ok(!deferred.style.layers.some((layer) => layer.id === id));
+  }
 
   const images = new Set<string>();
   const layers = new Set(deferred.style.layers.map((layer) => layer.id));
@@ -22,6 +26,8 @@ test('regional Canvas images are installed before their layers on initial load a
     addImage: (id: string) => { events.push(`image:${id}`); images.add(id); },
     getLayer: (id: string) => layers.has(id) ? { id } : undefined,
     addLayer: (layer: { id: string }, beforeId?: string) => {
+      assert.ok(!beforeId || layers.has(beforeId));
+      assert.ok(regionalPatternIds.every((id) => images.has(id)));
       events.push(`layer:${layer.id}`);
       beforeIds.push(beforeId);
       layers.add(layer.id);
@@ -32,7 +38,7 @@ test('regional Canvas images are installed before their layers on initial load a
     assert.equal(registerRegionalPatternsBeforeLayers(map, deferred.layers, imageFactory), true);
     const layerEvent = events.indexOf('layer:superblock-texture');
     assert.ok(layerEvent >= 0);
-    for (const id of regionalBlockPatternIds) assert.ok(events.indexOf(`image:${id}`) < layerEvent);
+    for (const id of regionalPatternIds) assert.ok(events.indexOf(`image:${id}`) < events.findIndex((event) => event.startsWith('layer:')));
     assert.equal(beforeIds.at(-1), expectedBefore);
   };
 

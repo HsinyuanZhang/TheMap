@@ -22,7 +22,7 @@ type Collection = FeatureCollection<Geometry, Properties>;
 
 const directory = resolve('public/data');
 const placeDirectory = resolve('content/places');
-const names = ['land', 'districts', 'parks', 'roads', 'metro_lines', 'metro_stations', 'buildings', 'pois', 'blocks', 'trees', 'labels', 'boundaries', 'surface', 'terrain', 'overview'] as const;
+const names = ['land', 'districts', 'parks', 'roads', 'metro_lines', 'metro_stations', 'buildings', 'pois', 'blocks', 'trees', 'labels', 'boundaries', 'surface', 'terrain', 'overview', 'atlas'] as const;
 const expectedDistrictIds = ['manhattan', 'beverly', 'st-germain', 'harlem', 'uptown', 'brooklyn', 'fleet-port', 'reserve'];
 const geometryByFile = {
   land: 'Polygon',
@@ -40,6 +40,7 @@ const geometryByFile = {
   surface: 'Polygon',
   terrain: 'Polygon|LineString',
   overview: 'Polygon',
+  atlas: 'Polygon|Point',
 } as const;
 const fixture = JSON.parse(await readFile(resolve('tests/transit.fixture.json'), 'utf8')) as Record<string, { color: string; stations: string[] }>;
 validateDistrictTopology();
@@ -166,6 +167,7 @@ for (const name of names) {
   datasets.set(name, parsed);
 }
 assert.ok(totalBytes <= 10 * 1024 * 1024, 'GeoJSON exceeds 10 MB');
+assert.ok((await stat(resolve(directory, 'atlas.geojson'))).size <= 1_000_000, 'atlas exceeds its 1 MB raw budget');
 assert.ok((await stat(resolve(directory, 'buildings.geojson'))).size <= 6 * 1024 * 1024, 'buildings.geojson exceeds 6 MB');
 const rawFiles = await Promise.all(names.map((name) => readFile(resolve(directory, name + '.geojson'))));
 const gzipBytes = rawFiles.reduce((sum, file) => sum + gzipSync(file).byteLength, 0);
