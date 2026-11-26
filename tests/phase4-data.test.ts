@@ -188,6 +188,10 @@ test('new Beverly contour candidates and the moved governor site meet elevation 
   const contours = generateBeverlyRoadContours().filter(({ level, path }) => [200, 240].includes(level) && path.length > 20);
   assert.equal(contours.length, 2);
   for (const { path } of contours) {
+    const xs = path.map(p => p[0]), ys = path.map(p => p[1]);
+    const west = Math.min(...xs), east = Math.max(...xs), south = Math.min(...ys), north = Math.max(...ys);
+    const upperArc = path.filter(p => p[0] > west + (east - west) * 0.2 && p[0] < east - (east - west) * 0.2 && p[1] > (south + north) / 2).map(p => p[1]);
+    assert.ok(Math.max(...upperArc) - Math.min(...upperArc) > 0.3, 'hill-road contours must wind rather than form a straight-sided stadium');
     for (let index = 1; index < path.length; index += 1) {
       const from = path[index - 1]!, to = path[index]!;
       const length = Math.hypot(to[0] - from[0], to[1] - from[1]);

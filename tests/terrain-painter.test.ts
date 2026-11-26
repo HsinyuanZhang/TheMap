@@ -3,13 +3,24 @@ import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { datasetNames, emptyMapDatasets, type Dataset, type MapDatasets } from '../src/dataset-loader';
 import { WorldModel, toLngLat, worldHash } from '../src/world-model';
-import { PAINT, paintPixels, tileView, lodWeights, stripeCoverage, type Pixels } from '../src/terrain-painter';
+import { PAINT, paintPixelRatio, paintPixels, tileView, lodWeights, stripeCoverage, type Pixels } from '../src/terrain-painter';
 import { ByteLRU } from '../src/paint-cache';
 import { beverlyElevationAt } from '../data/generate';
 
 const data: MapDatasets = Object.fromEntries(await Promise.all(datasetNames.map(async name => [name,
   JSON.parse(await readFile(new URL(`../public/data/${name}.geojson`, import.meta.url), 'utf8')) as Dataset]))) as unknown as MapDatasets;
 const world = new WorldModel(data);
+
+test('tile resolution accounts for fractional zoom magnification and high DPI without changing world bounds', () => {
+  assert.equal(paintPixelRatio(1), 2); assert.equal(paintPixelRatio(2), 4); assert.equal(paintPixelRatio(1.25), 4);
+  assert.throws(() => paintPixelRatio(NaN), /Invalid/); assert.throws(() => paintPixelRatio(0), /Invalid/);
+  const normal = tileView(12, 342, 1547, 12.5), retina = tileView(12, 342, 1547, 12.5, paintPixelRatio(2));
+  assert.equal(retina.width, 2048); assert.equal(retina.height, 2048);
+  for (const key of ['west', 'east', 'north', 'south', 'zoom'] as const) assert.equal(retina[key], normal[key]);
+  assert.throws(() => tileView(12, 342, 1547, 12.5, 0), /Invalid/);
+  const crop = { ...normal, width: 32, height: 32, east: normal.west + 0.5, south: normal.north - 0.5, pixelRatio: 2 };
+  assert.deepEqual(paintPixels(world, crop).data, paintPixels(world, crop).data);
+});
 function tileAt(z: number, x: number, y: number): [number, number, number] {
   const [lng, lat] = toLngLat([x, y]), n = 2 ** z;
   return [z, Math.floor((lng + 180) / 360 * n), Math.floor((1 - Math.asinh(Math.tan(lat * Math.PI / 180)) / Math.PI) / 2 * n)];

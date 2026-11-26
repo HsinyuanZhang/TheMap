@@ -10,7 +10,7 @@ export const FIRST_COORDINATES: [[number, number], [number, number], [number, nu
 export type PaintRequest =
   | { kind: 'cancel'; id: number }
   | { kind: 'world'; revision: number; data: MapDatasets }
-  | { kind: 'tile'; id: number; revision: number; z: number; x: number; y: number; detail: number; pitch: number; buildings: boolean };
+  | { kind: 'tile'; id: number; revision: number; z: number; x: number; y: number; detail: number; pitch: number; buildings: boolean; pixelRatio: number };
 export type PaintResponse =
   | { kind: 'first'; revision: number; data: ArrayBuffer }
   | { kind: 'tile'; id: number; data: ArrayBuffer }

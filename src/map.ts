@@ -21,6 +21,7 @@ import {
   initialMapCamera,
   mapCameraLimits,
   mobileScaleOffset,
+  overviewBounds,
   pointFocusZoom,
   removeTranslationFromRect,
   shouldFitOverviewForDataset,
@@ -167,6 +168,7 @@ export class MapController {
     });
     this.map.on('remove', () => this.painter.dispose());
     this.map.on('zoom', () => this.painter.renderState(this.map.getZoom(), this.map.getPitch(), this.layerVisibility.buildings));
+    this.map.on('resize', () => this.painter.renderState(this.map.getZoom(), this.map.getPitch(), this.layerVisibility.buildings));
     this.installCenterBounds();
     this.map.on('movestart', () => {
       if (!this.applyingLayout) this.isOverview = false;
@@ -194,16 +196,15 @@ export class MapController {
   }
 
   private fitInitialBounds(): boolean {
-    const geometry = this.datasets.land.features.flatMap((feature) => positions(feature.geometry))
-      .filter((position) => Number.isFinite(position[0]) && Number.isFinite(position[1]));
-    if (geometry.length === 0) {
+    const bounds = overviewBounds(this.datasets.districts);
+    if (!bounds) {
       this.isOverview = true;
       return false;
     }
     const wasApplyingLayout = this.applyingLayout;
     this.applyingLayout = true;
     try {
-      this.map.fitBounds(boundsFromPositions(geometry), {
+      this.map.fitBounds(bounds, {
         padding: this.getCameraPadding(),
         absolutePadding: true,
         duration: 0,

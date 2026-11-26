@@ -1,4 +1,5 @@
 import type { Position } from 'geojson';
+import type { Dataset } from './dataset-loader';
 
 export interface CenterBounds {
   west: number;
@@ -25,7 +26,12 @@ export const mapCameraLimits = { minZoom: 7.2, maxZoom: 18, maxPitch: 80, defaul
 export const initialMapCamera = { pitch: 0, bearing: 0 } as const;
 
 export function shouldFitOverviewForDataset(name: string, isOverview: boolean): boolean {
-  return name === 'land' && isOverview;
+  return name === 'districts' && isOverview;
+}
+
+export function overviewBounds(districts: Dataset): [[number, number], [number, number]] | undefined {
+  const positions = districts.features.flatMap(({ geometry }) => geometry.type === 'Polygon' ? geometry.coordinates.flat() : geometry.type === 'MultiPolygon' ? geometry.coordinates.flat(2) : []);
+  return positions.length ? boundsFromPositions(positions) : undefined;
 }
 
 export function pointFocusZoom(currentZoom: number, minimumZoom: number): number {

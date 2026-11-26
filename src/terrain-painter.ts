@@ -9,13 +9,18 @@ export const SURFACE_COLORS: Record<Surface, readonly [number, number, number]> 
   park: [148, 177, 113], military: [155, 169, 153], airport: [153, 176, 112], foreign: [151, 142, 113], lake: [78, 135, 155], pier: [154, 139, 114],
 };
 const FIELDS = [[195, 187, 115], [173, 183, 114], [203, 193, 132], [113, 149, 83], [169, 137, 91], [181, 191, 137], [163, 168, 111]];
-export interface PaintView { west: number; north: number; east: number; south: number; width: number; height: number; zoom: number; pitch?: number; buildings?: boolean; }
+export interface PaintView { west: number; north: number; east: number; south: number; width: number; height: number; zoom: number; pitch?: number; buildings?: boolean; pixelRatio?: number; }
 export interface Pixels { width: number; height: number; data: Uint8ClampedArray; }
-export function tileView(z: number, x: number, y: number, zoom = z): PaintView {
+export function paintPixelRatio(deviceRatio: number): number {
+  if (!Number.isFinite(deviceRatio) || deviceRatio <= 0) throw new Error('Invalid paint pixel ratio.');
+  return Math.min(8, Math.ceil(deviceRatio) * 2);
+}
+export function tileView(z: number, x: number, y: number, zoom = z, pixelRatio = 1): PaintView {
   if (![z, x, y].every(Number.isInteger) || z < PAINT.minzoom || z > PAINT.maxzoom || x < 0 || y < 0 || x >= 2 ** z || y >= 2 ** z) throw new Error('Invalid paint tile coordinates.');
+  if (!Number.isInteger(pixelRatio) || pixelRatio < 1 || pixelRatio > 8) throw new Error('Invalid paint pixel ratio.');
   const corner = (tx: number, ty: number): XY => toKm([tx / 2 ** z * 360 - 180, Math.atan(Math.sinh(Math.PI * (1 - 2 * ty / 2 ** z))) * 180 / Math.PI]);
   const a = corner(x, y), b = corner(x + 1, y + 1);
-  return { west: a[0], north: a[1], east: b[0], south: b[1], width: 512, height: 512, zoom };
+  return { west: a[0], north: a[1], east: b[0], south: b[1], width: PAINT.tileSize * pixelRatio, height: PAINT.tileSize * pixelRatio, zoom, pixelRatio };
 }
 export function lodWeights(zoom: number): { glyphs: number; manhattan: number } {
   return { glyphs: smooth((zoom - PAINT.middle) / PAINT.fade), manhattan: 1 - smooth((zoom - PAINT.close) / PAINT.fade) };
@@ -31,7 +36,7 @@ export function stripeCoverage(position: number, period: number, stripe: number,
 
 class Brush {
   private readonly coverage: Float64Array;
-  constructor(readonly data: Uint8ClampedArray, readonly width: number, readonly height: number) { this.coverage = new Float64Array(width); }
+  constructor(readonly data: Uint8ClampedArray, readonly width: number, readonly height: number, private readonly pixelRatio = 1) { this.coverage = new Float64Array(width); }
   pixel(x: number, y: number, color: readonly number[], alpha = 1): void {
     x = Math.floor(x); y = Math.floor(y);
     if (x < 0 || y < 0 || x >= this.width || y >= this.height) return;
@@ -39,12 +44,14 @@ class Brush {
     for (let c = 0; c < 3; c++) this.data[i + c] += (color[c] - this.data[i + c]) * alpha;
   }
   ellipse(x: number, y: number, rx: number, ry: number, color: readonly number[], alpha = 1): void {
+    x *= this.pixelRatio; y *= this.pixelRatio; rx *= this.pixelRatio; ry *= this.pixelRatio;
     for (let j = Math.floor(y - ry - 1); j <= y + ry + 1; j++) for (let i = Math.floor(x - rx - 1); i <= x + rx + 1; i++) {
       const r = Math.hypot((i + 0.5 - x) / rx, (j + 0.5 - y) / ry);
       this.pixel(i, j, color, alpha * Math.max(0, Math.min(1, (1 - r) * Math.min(rx, ry) + 0.5)));
     }
   }
   polygon(points: readonly XY[], color: readonly number[], alpha = 1): void {
+    points = points.map(([x, y]) => [x * this.pixelRatio, y * this.pixelRatio]);
     const min = Math.max(0, Math.floor(Math.min(...points.map(p => p[1])))), max = Math.min(this.height - 1, Math.ceil(Math.max(...points.map(p => p[1]))));
     const left = Math.max(0, Math.floor(Math.min(...points.map(p => p[0])))), right = Math.min(this.width, Math.ceil(Math.max(...points.map(p => p[0]))));
     for (let y = min; y <= max; y++) {
@@ -69,16 +76,17 @@ class Brush {
 }
 
 export function paintPixels(world: WorldModel, view: PaintView, bleed: number = PAINT.bleed): Pixels {
-  if (!Object.values(view).every(v => typeof v === 'boolean' || Number.isFinite(v)) || view.width < 1 || view.height < 1 || view.width > 4096 || view.height > 4096 || !Number.isInteger(view.width) || !Number.isInteger(view.height) || view.east <= view.west || view.north <= view.south || bleed < 0 || bleed > 256) throw new Error('Invalid paint view.');
+  const pixelRatio = view.pixelRatio ?? 1;
+  if (!Object.values(view).every(v => typeof v === 'boolean' || Number.isFinite(v)) || pixelRatio < 1 || pixelRatio > 8 || view.width < 1 || view.height < 1 || view.width > 4096 || view.height > 4096 || !Number.isInteger(view.width) || !Number.isInteger(view.height) || view.east <= view.west || view.north <= view.south || bleed < 0 || bleed > PAINT.bleed * 8) throw new Error('Invalid paint view.');
   const width = view.width + bleed * 2, height = view.height + bleed * 2;
-  const sx = view.width / (view.east - view.west), sy = view.height / (view.north - view.south), scale = Math.sqrt(sx * sy);
-  const west = view.west - bleed / sx, north = view.north + bleed / sy;
-  const data = new Uint8ClampedArray(width * height * 4), brush = new Brush(data, width, height), weights = lodWeights(view.zoom);
+  const sx = view.width / (view.east - view.west) / pixelRatio, sy = view.height / (view.north - view.south) / pixelRatio, scale = Math.sqrt(sx * sy);
+  const west = view.west - bleed / (sx * pixelRatio), north = view.north + bleed / (sy * pixelRatio);
+  const data = new Uint8ClampedArray(width * height * 4), brush = new Brush(data, width, height, pixelRatio), weights = lodWeights(view.zoom);
   const screen = (x: number, y: number): XY => [(x - west) * sx, (north - y) * sy];
   const lightUp = Math.sin(MAP_LIGHT.altitude * Math.PI / 180), lightSide = Math.cos(MAP_LIGHT.altitude * Math.PI / 180);
   for (let py = 0; py < height; py++) for (let px = 0; px < width; px++) {
-    const x = west + (px + 0.5) / sx, y = north - (py + 0.5) / sy, sample = world.sample(x, y);
-    const detail = smooth((scale - 9) / 22), footprint = 1 / scale;
+    const x = west + (px + 0.5) / (sx * pixelRatio), y = north - (py + 0.5) / (sy * pixelRatio), sample = world.sample(x, y);
+    const detail = smooth((scale - 9) / 22), footprint = 1 / (scale * pixelRatio);
     let color = [...SURFACE_COLORS[sample.surface]], texture = (noise(x * 3, y * 3) - 0.5) * 3;
     if (sample.surface === 'sea') {
       const coast = world.coastDistance(x, y), shallow = 1 - smooth(coast / 5);
@@ -166,8 +174,8 @@ export function paintPixels(world: WorldModel, view: PaintView, bleed: number = 
   };
   const sites = (step: number, salt: number, draw: (x: number, y: number, r: number) => void): void => {
     const points: Array<{ x: number; y: number; r: number }> = [];
-    for (let i = Math.floor(Math.max(west - 0.5, world.bounds[0] - 2) / step) - 1; i <= Math.ceil(Math.min(west + width / sx + 0.5, world.bounds[2] + 2) / step) + 1; i++) {
-      for (let j = Math.floor(Math.max(north - height / sy - 0.5, world.bounds[1] - 2) / step) - 1; j <= Math.ceil(Math.min(north + 0.5, world.bounds[3] + 2) / step) + 1; j++) {
+    for (let i = Math.floor(Math.max(west - 0.5, world.bounds[0] - 2) / step) - 1; i <= Math.ceil(Math.min(west + width / (sx * pixelRatio) + 0.5, world.bounds[2] + 2) / step) + 1; i++) {
+      for (let j = Math.floor(Math.max(north - height / (sy * pixelRatio) - 0.5, world.bounds[1] - 2) / step) - 1; j <= Math.ceil(Math.min(north + 0.5, world.bounds[3] + 2) / step) + 1; j++) {
         points.push({ x: (i + 0.15 + worldHash(i, j, salt) * 0.7) * step, y: (j + 0.15 + worldHash(i, j, salt + 1) * 0.7) * step, r: worldHash(i, j, salt + 2) });
       }
     }

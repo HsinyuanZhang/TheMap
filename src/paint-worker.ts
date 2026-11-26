@@ -31,10 +31,10 @@ worker.onmessage = ({ data: message }) => {
       }
       if (cancelled.delete(message.id)) return;
       if (!world || revision !== message.revision) throw new Error('Paint world is not ready.');
-      const key = [revision, message.z, message.x, message.y, message.detail, message.pitch > 30, message.buildings].join('/');
+      const key = [revision, message.z, message.x, message.y, message.detail, message.pitch > 30, message.buildings, message.pixelRatio].join('/');
       let data = cache.get(key);
       if (!data) {
-        data = await encode(paintPixels(world, { ...tileView(message.z, message.x, message.y, message.detail), pitch: message.pitch, buildings: message.buildings }));
+        data = await encode(paintPixels(world, { ...tileView(message.z, message.x, message.y, message.detail, message.pixelRatio), pitch: message.pitch, buildings: message.buildings }, PAINT.bleed * message.pixelRatio));
         cache.set(key, data);
       }
       if (cancelled.delete(message.id)) return;

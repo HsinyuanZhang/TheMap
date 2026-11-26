@@ -1,7 +1,7 @@
 import { addProtocol, removeProtocol, type ImageSource, type Map as MapLibreMap, type RasterTileSource } from 'maplibre-gl';
 import type { MapDatasets } from './dataset-loader';
 import type { PaintRequest, PaintResponse } from './paint-messages';
-import { PAINT } from './terrain-painter';
+import { PAINT, paintPixelRatio } from './terrain-painter';
 const clients = new Map<string, PaintProtocol>();
 let sequence = 0;
 interface Pending { resolve: (value: { data: ArrayBuffer }) => void; reject: (error: Error) => void; cleanup: () => void; }
@@ -42,7 +42,8 @@ export class PaintProtocol {
     this.update(data);
   }
   tiles(detail = 9, pitch = 0, buildings = true): string[] {
-    return [`paint://${this.name}/{z}/{x}/{y}?revision=${this.revision}&detail=${detail}&pitch=${pitch > 30 ? 31 : 0}&buildings=${buildings ? 1 : 0}`];
+    const pixelRatio = paintPixelRatio(this.map?.getPixelRatio() ?? globalThis.devicePixelRatio ?? 1);
+    return [`paint://${this.name}/{z}/{x}/{y}?revision=${this.revision}&detail=${detail}&pitch=${pitch > 30 ? 31 : 0}&buildings=${buildings ? 1 : 0}&pixelRatio=${pixelRatio}`];
   }
   attach(map: MapLibreMap): void { this.map = map; this.installFirst(); }
   private installFirst(): void {
@@ -62,7 +63,7 @@ export class PaintProtocol {
   renderState(zoom: number, pitch: number, buildings: boolean): void {
     const detail = zoom >= PAINT.middle && zoom <= PAINT.middle + PAINT.fade || zoom >= PAINT.close && zoom <= PAINT.close + PAINT.fade
       ? Math.round(zoom * 10) / 10 : zoom < PAINT.middle ? 10 : zoom < PAINT.close ? 12.5 : 14;
-    const state = [detail, pitch > 30, buildings, this.revision].join('/');
+    const state = [detail, pitch > 30, buildings, this.revision, this.map?.getPixelRatio() ?? 1].join('/');
     if (state === this.state) return;
     this.state = state;
     (this.map?.getSource('painted-terrain') as RasterTileSource | undefined)?.setTiles(this.tiles(detail, pitch, buildings));
@@ -78,7 +79,7 @@ export class PaintProtocol {
       const abort = (): void => { this.pending.delete(id); this.send({ kind: 'cancel', id }); reject(new DOMException('Aborted', 'AbortError')); };
       signal.addEventListener('abort', abort, { once: true });
       this.pending.set(id, { resolve, reject, cleanup: () => signal.removeEventListener('abort', abort) });
-      this.send({ kind: 'tile', id, revision, z, x, y, detail, pitch, buildings: url.searchParams.get('buildings') === '1' });
+      this.send({ kind: 'tile', id, revision, z, x, y, detail, pitch, buildings: url.searchParams.get('buildings') === '1', pixelRatio: Number(url.searchParams.get('pixelRatio') ?? 2) });
     });
   }
   dispose(): void {

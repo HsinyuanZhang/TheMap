@@ -971,9 +971,13 @@ function generateBeverlyTerrain(): {
 }
 
 export function generateBeverlyRoadContours(): Array<{ level: number; path: XY[] }> {
+  const roadHeight = (x: number, y: number): number => elevationAt(x, y)
+    + 45 * Math.sin(0.8 * (x - 15) + 0.6 * (y - 3)) + 17 * Math.sin(1.1 * x - 0.9 * y);
   const points: Feature<Point, { elevation: number }>[] = [];
   for (let y = 0; y <= 9.0001; y += 0.05) {
-    for (let x = 9; x <= 28.0001; x += 0.05) points.push(point([x, y], { elevation: elevationAt(x, y) }));
+    for (let x = 9; x <= 28.0001; x += 0.05) {
+      points.push(point([x, y], { elevation: roadHeight(x, y) }));
+    }
   }
   const levels = Array.from({ length: 7 }, (_, index) => (index + 1) * 40);
   const source = isolines(featureCollection(points), levels, {
@@ -984,8 +988,26 @@ export function generateBeverlyRoadContours(): Array<{ level: number; path: XY[]
   for (const contour of source.features) {
     const level = Number(contour.properties?.level ?? 0);
     for (const path of (contour.geometry as MultiLineString).coordinates) {
-      const localPath = path.map(([x, y]) => [x, y] as XY);
-      for (const segment of clipLineToRing(localPath, beverlyDistrict.ring)) {
+      const project = ([x, y]: XY): XY => {
+        for (let i = 0; i < 6; i++) {
+          const error = roadHeight(x, y) - level;
+          const gx = (roadHeight(x + 0.0005, y) - roadHeight(x - 0.0005, y)) / 0.001;
+          const gy = (roadHeight(x, y + 0.0005) - roadHeight(x, y - 0.0005)) / 0.001;
+          const gradient = gx * gx + gy * gy;
+          if (gradient < 1e-8) break;
+          x -= error * gx / gradient; y -= error * gy / gradient;
+        }
+        return [x, y];
+      };
+      const localPath = [200, 240].includes(level) ? path.flatMap(([x, y], index): XY[] => {
+        if (!index) return [project([x, y])];
+        const previous = path[index - 1]!, count = Math.max(1, Math.ceil(Math.hypot(x - previous[0]!, y - previous[1]!) / 0.01));
+        return Array.from({ length: count }, (_, i) => project([previous[0]! + (x - previous[0]!) * (i + 1) / count, previous[1]! + (y - previous[1]!) * (i + 1) / count]));
+      }) : path.map(([x, y]) => [x, y] as XY);
+      const roadPath = [200, 240].includes(level)
+        ? simplify(lineString(localPath.map(([x, y]) => [x, y])), { tolerance: 0.0001, highQuality: true }).geometry.coordinates.map(([x, y]) => [x!, y!] as XY)
+        : localPath;
+      for (const segment of clipLineToRing(roadPath, beverlyDistrict.ring)) {
         if (segment.length >= 4) paths.push({ level, path: segment });
       }
     }
@@ -1542,6 +1564,11 @@ function generateBeverlyRoads(
     throw new Error("Beverly A2/A3 connector starts must lie inside the road-search grid.");
   }
 
+  const shapeRoad = (path: readonly XY[]): XY[] => {
+    const rounded = roundHillroadTurns(path, beverlyElevationAt,
+      p => pointInRing(p, beverlyDistrict.ring) && roadExclusions.every(ring => !pointInRing(p, ring)));
+    return simplify(lineString(rounded.map(([x, y]) => [x, y])), { tolerance: 0.0001, highQuality: true }).geometry.coordinates.map(([x, y]) => [x!, y!] as XY);
+  };
   const eligibleContours = contours
     .filter(({ level, path }) => [200, 240].includes(level)
       && Math.hypot(path[0]![0] - path.at(-1)![0], path[0]![1] - path.at(-1)![1]) <= 0.001
@@ -1579,7 +1606,7 @@ function generateBeverlyRoads(
     if (contour.level === 200) {
       const uniqueLoop = loop.slice(0, -1);
       const ordered = [...uniqueLoop.slice(start), ...uniqueLoop.slice(0, start), uniqueLoop[start]!];
-      const routedPath = rerouteLongStraightRuns([...firstAccess.path, ...ordered.slice(1)]);
+      const routedPath = shapeRoad(rerouteLongStraightRuns([...firstAccess.path, ...ordered.slice(1)]));
       const arcs = Array.from({ length: 4 }, (_, index) => routedPath.slice(
         Math.floor(index * (routedPath.length - 1) / 4),
         Math.floor((index + 1) * (routedPath.length - 1) / 4) + 1,
@@ -1593,28 +1620,14 @@ function generateBeverlyRoads(
       }
       continue;
     }
-    const splitArc = (path: readonly XY[]): [XY[], XY[]] => {
-      const midpoint = Math.floor((path.length - 1) / 2);
-      return [path.slice(0, midpoint + 1), path.slice(midpoint)];
-    };
-    const firstParts = splitArc(firstArc);
-    const secondParts = splitArc(secondArc);
-    const roadPaths = contour.level === 160
-      ? [
-        [...firstAccess.path, ...firstParts[0].slice(1)],
-        firstParts[1],
-        [...secondAccess!.path, ...secondParts[0].slice(1)],
-        secondParts[1],
-      ]
-      : [
-        [...firstAccess.path, ...firstParts[0].slice(1)],
-        firstParts[1],
-        secondParts[0],
-        secondParts[1],
-      ];
+    const routedPath = shapeRoad(rerouteLongStraightRuns([...firstAccess.path, ...firstArc.slice(1), ...secondArc.slice(1)]));
+    const roadPaths = Array.from({ length: 4 }, (_, index) => routedPath.slice(
+      Math.floor(index * (routedPath.length - 1) / 4),
+      Math.floor((index + 1) * (routedPath.length - 1) / 4) + 1,
+    ));
     const suffixes = ["a", "b", "c", "d"];
     for (const [index, sourcePath] of roadPaths.entries()) {
-      const path = rerouteLongStraightRuns(sourcePath);
+      const path = sourcePath;
       if (sampledGrade(path) > gradeLimit) {
         throw new Error(`Beverly ${contour.level} m road arc exceeds the sampled 8% grade limit.`);
       }
