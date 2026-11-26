@@ -1,13 +1,15 @@
 import {
-  booleanDisjoint, booleanWithin, buffer, difference, featureCollection, intersect, isobands, isolines,
+  booleanDisjoint, booleanValid, booleanWithin, buffer, difference, featureCollection, intersect, isobands, isolines,
   lineIntersect, lineString, point, pointOnFeature, simplify, voronoi,
 } from "@turf/turf";
 import type { Feature, FeatureCollection, Geometry, LineString, MultiLineString, MultiPolygon, Point, Polygon, Position } from "geojson";
 import {
   closeRing, distanceToSegment, pointInRing, polygonArea, rectangleRing, reversePath,
 } from "./geometry";
-import { routeOnRoads } from "./metro";
-import { generateAtlas } from "./atlas";
+import { airport, airportAircraft, airportApron, airportPiers, airportPosition, airportRing, airportRunways, airportTaxiways } from "./phase4-config";
+import { metroPaths, regionalArterials } from "./phase4-roads";
+import { cleanRoundedPath, finalizeRoadNetwork, prepareRoadNetwork } from "./phase4-network";
+import { roundHillroadTurns } from "./hillroad-arcs";
 import {
   beverlyHills, coastline, coastlineYAtX, districts, generatedBoundaries, land, parks, points,
   districtLabelPositions, reserveTownCenters, roads as sourceRoads, stations, transitLines, urbanGrid,
@@ -31,7 +33,7 @@ const localFromCoordinate = ([longitude, latitude]: Position): XY => [
 ];
 
 function polygonGeometry(rings: readonly Ring[]): Polygon {
-  return { type: "Polygon", coordinates: rings.map((ring, index) => {
+  const geometry: Polygon = { type: "Polygon", coordinates: rings.map((ring, index) => {
     const signedArea = ring.slice(1).reduce((sum, point, offset) => {
       const previous = ring[offset]!;
       return sum + previous[0] * point[1] - point[0] * previous[1];
@@ -47,6 +49,10 @@ function polygonGeometry(rings: readonly Ring[]): Polygon {
     if (result.length < 4) throw new Error("Polygon ring collapsed at six-decimal coordinate precision.");
     return result;
   }) };
+  if (booleanValid(geometry)) return geometry;
+  const repaired = simplify({ type: "Feature", properties: {}, geometry }, { tolerance: 0.000001, highQuality: true }).geometry;
+  if (!booleanValid(repaired)) throw new Error("Polygon is invalid after six-decimal coordinate rounding.");
+  return repaired;
 }
 const lineGeometry = (coordinates: readonly XY[]): LineString => ({ type: "LineString", coordinates: coordinates.map(coordinate) });
 const pointGeometry = (position: XY): Point => ({ type: "Point", coordinates: coordinate(position) });
@@ -324,10 +330,12 @@ function clipRoadsAroundLandmarks(roads: readonly RoadDefinition[], sites: reado
       let cursor = 0;
       const appendOutside = (from: number, to: number): void => {
         if (to - from <= 1e-9) return;
-        pieces.push([
-          [start[0] + dx * from, start[1] + dy * from],
-          [start[0] + dx * to, start[1] + dy * to],
-        ]);
+        const first: XY = [start[0] + dx * from, start[1] + dy * from];
+        const last: XY = [start[0] + dx * to, start[1] + dy * to];
+        const previous = pieces.at(-1);
+        const endpoint = previous?.at(-1);
+        if (previous && endpoint && Math.hypot(endpoint[0] - first[0], endpoint[1] - first[1]) < 1e-8) previous.push(last);
+        else pieces.push([first, last]);
       };
       for (const [from, to] of intervals) {
         appendOutside(cursor, from);
@@ -366,11 +374,7 @@ function generateRoadNetwork(): RoadDefinition[] {
   const result = [...sourceRoads];
   let sequence = 0;
 
-  for (const line of transitLines) {
-    for (const [leg, coordinates] of Object.entries(line.routes ?? {})) {
-      addRoad(result, `metro-corridor-${line.id}-${leg.replaceAll(">", "-")}`, "", "local", 0.022, coordinates);
-    }
-  }
+  for (const [id, coordinates] of metroPaths()) addRoad(result, `metro-corridor-${id}`, "", "local", 0.022, coordinates);
 
   const grid = urbanGrid.grid;
   for (let x = grid.west; x + grid.blockWidth <= grid.east; x += grid.stepX) {
@@ -446,7 +450,7 @@ const fifthRoad = sourceRoads.find((road) => road.id === "fifth-avenue")!;
 function buildingHeight(position: XY): number {
   const u1 = rand();
   const u2 = rand();
-  let height = 11 + 28 * u1;
+  let height = 10 + 26 * u1;
   for (const hotspot of hotspots) {
     const distance = Math.hypot(position[0] - hotspot.center[0], position[1] - hotspot.center[1]);
     height += hotspot.peak * Math.exp(-(distance * distance) / (2 * hotspot.sigma * hotspot.sigma))
@@ -585,6 +589,7 @@ function generateBlockBuildings(
   for (const piece of pieces) {
     const exterior = piece[0]!;
     const blockId = addBlockPolygon(piece, blockZone);
+    const exportedBlock = blockFeatures.at(-1)!;
     const longSetback = 0.006;
     const edgeSetback = 0.004;
     const gap = 0.006;
@@ -605,7 +610,7 @@ function generateBlockBuildings(
       let offset = longStart;
       const rowCenter = crossStart + rowDepth / 2 + row * (rowDepth + gap);
       while (offset + 0.05 <= longEnd + 1e-7) {
-        const lotWidth = Math.min(0.05 + rand() * 0.04, longEnd - offset);
+        const lotWidth = Math.min(0.05 + rand() * 0.025, longEnd - offset);
         if (lotWidth < 0.05) break;
         const localX = offset + lotWidth / 2;
         const position: XY = [
@@ -617,7 +622,9 @@ function generateBlockBuildings(
           const buildingWidth = (alongWidth ? lotWidth : rowDepth) - roundingSetback * 2;
           const buildingDepth = (alongWidth ? rowDepth : lotWidth) - roundingSetback * 2;
           const footprint = localRect(position, buildingWidth, buildingDepth, angle);
-          if (booleanWithin(localPolygon(footprint), localPolygonWithHoles(piece)) && footprintAllowed(footprint, roads, 0)) {
+          if (booleanWithin(localPolygon(footprint), localPolygonWithHoles(piece))
+            && booleanWithin(feature(polygonGeometry([footprint]), {}), exportedBlock)
+            && footprintAllowed(footprint, roads, 0)) {
             const top = buildingHeight(position);
             buildingSegments(position, buildingWidth, buildingDepth, top, zone, blockId, angle);
           }
@@ -886,94 +893,7 @@ function clipLineToRing(line: readonly XY[], ring: Ring): XY[][] {
   return result;
 }
 
-const regionalSuperblockTypes: Readonly<Record<string, string>> = {
-  uptown: "midrise",
-  "st-germain": "lowrise",
-  harlem: "lowrise",
-  brooklyn: "lowrise",
-};
-const brooklynMidriseShare = 0.2;
 
-function generateRegionalTexture(roads: RoadDefinition[]): void {
-  const coastIndex = buildRoadIndex([{ id: "coastal-setback", name: "", roadClass: "local", width: 0.06, coordinates: coastline }]);
-  let superblockNumber = 0;
-  const brooklynBlocks: Array<{ block: Feature<Polygon, Properties>; center: XY }> = [];
-  for (const district of districts.filter((item) => item.id !== "manhattan" && item.id !== "fleet-port" && item.id !== "reserve" && item.id !== "beverly")) {
-    const bounds = {
-      west: Math.min(...district.ring.map(([x]) => x)),
-      east: Math.max(...district.ring.map(([x]) => x)),
-      south: Math.min(...district.ring.map(([, y]) => y)),
-      north: Math.max(...district.ring.map(([, y]) => y)),
-    };
-    const step = 1.5;
-    const districtStations = stations.filter((station) =>
-      station.district === district.name || district.ring.slice(1).some((end, index) =>
-        distanceToSegment(station.position, district.ring[index]!, end) < 0.001,
-      ),
-    );
-    const rowValues: number[] = [];
-    for (let y = Math.ceil(bounds.south + 0.7); y < bounds.north - 0.2; y += step) {
-      if (!districtStations.some((station) => Math.abs(station.position[1] - y) < 0.6)) rowValues.push(y);
-    }
-    for (const station of districtStations) {
-      if (station.position[1] >= bounds.south - 0.001 && station.position[1] <= bounds.north + 0.001) rowValues.push(station.position[1]);
-    }
-    for (const [row, y] of [...new Set(rowValues)].sort((a, b) => a - b).entries()) {
-      const segments = clipLineToRing([[bounds.west, y], [bounds.east, y]], district.ring);
-      for (const [part, segment] of segments.entries()) {
-        addRoad(roads, "superblock-road-h-" + district.id + "-" + row + "-" + part, "", "arterial", 0.024, segment);
-      }
-    }
-    let column = 0;
-    for (let x = Math.ceil(bounds.west + 0.8); x < bounds.east - 0.2; x += step) {
-      const segments = clipLineToRing([[x, bounds.south], [x, bounds.north]], district.ring);
-      for (const [part, segment] of segments.entries()) {
-        addRoad(roads, "superblock-road-v-" + district.id + "-" + column + "-" + part, "", "arterial", 0.024, segment);
-      }
-      column += 1;
-    }
-    const districtRoadIndex = buildRoadIndex(roads);
-    const xs: number[] = [bounds.west];
-    const ys: number[] = [bounds.south];
-    for (let x = bounds.west + step; x < bounds.east; x += step) xs.push(x);
-    for (let y = bounds.south + step; y < bounds.north; y += step) ys.push(y);
-    xs.push(bounds.east);
-    ys.push(bounds.north);
-    for (let x = 1; x < xs.length; x += 1) {
-      for (let y = 1; y < ys.length; y += 1) {
-        const ring = close([[xs[x - 1]!, ys[y - 1]!], [xs[x]!, ys[y - 1]!], [xs[x]!, ys[y]!], [xs[x - 1]!, ys[y]!]]);
-        const pieces = clipBlockPieces(ring, district.ring, districtRoadIndex, coastIndex);
-        for (const piece of pieces) {
-          const blockId = `SB-${district.id}-${String(superblockNumber++).padStart(5, "0")}`;
-          const block = feature(polygonGeometry(piece), {
-            block_id: blockId,
-            kind: "superblock",
-            zone: district.id,
-            type: regionalSuperblockTypes[district.id] ?? "lowrise",
-          });
-          blockFeatures.push(block);
-          if (district.id === "brooklyn") brooklynBlocks.push({ block, center: centerOf(piece[0]!) });
-        }
-      }
-    }
-  }
-  const brooklynDistrict = districtById.get("brooklyn")!;
-  const brooklynStations = stations.filter((station) => station.district === brooklynDistrict.name);
-  const motorways = roads.filter((road) => road.roadClass === "motorway");
-  const priority = ({ center }: { center: XY }): number => {
-    const highwayDistance = Math.min(...motorways.flatMap((road) => road.coordinates.slice(1).map((end, index) =>
-      distanceToSegment(center, road.coordinates[index]!, end))));
-    const stationDistance = Math.min(...brooklynStations.map((station) => Math.hypot(
-      center[0] - station.position[0], center[1] - station.position[1],
-    )));
-    return highwayDistance + stationDistance;
-  };
-  brooklynBlocks.sort((first, second) => priority(first) - priority(second));
-  const brooklynMidriseCount = Math.round(brooklynBlocks.length * brooklynMidriseShare);
-  for (const [index, { block }] of brooklynBlocks.entries()) {
-    block.properties!.type = index < brooklynMidriseCount ? "midrise" : "lowrise";
-  }
-}
 
 const beverlyDistrict = districtById.get("beverly")!;
 const reserveDistrict = districtById.get("reserve")!;
@@ -987,9 +907,9 @@ function elevationAt(x: number, y: number): number {
   if (x < 9 || x > 28 || y < 0 || y > 9) return 0;
   if (y < 2.8) {
     const coast = Math.min(35, 18 + 8 * Math.sin(x * 0.6));
-    return Math.round(coast * smoothstep((2.8 - y) / 0.5));
+    return coast * smoothstep((2.8 - y) / 0.5);
   }
-  const edgeDistance = Math.min(x - 9, 28 - x, y - 2.8, 9 - y);
+  const edgeDistance = Math.min(x - 15.3, 28 - x, y - 2.8, 9 - y);
   if (edgeDistance <= 0) return 0;
   const taper = smoothstep(edgeDistance / 1.15);
   const hills = Math.pow(beverlyHills.reduce((sum, hill) => {
@@ -997,7 +917,7 @@ function elevationAt(x: number, y: number): number {
     const dy = (y - hill.center[1]) / hill.sigmaY;
     return sum + Math.pow(hill.peak * Math.exp(-0.5 * (dx * dx + dy * dy)), 4);
   }, 0), 0.25);
-  return Math.round(Math.min(320, hills * taper));
+  return Math.min(320, hills * taper);
 }
 
 function elevationSlope(x: number, y: number): number {
@@ -1067,7 +987,7 @@ function generateBeverlyTerrain(): {
   return { bands, contours, contourPaths: generateBeverlyRoadContours() };
 }
 
-function generateBeverlyRoadContours(): Array<{ level: number; path: XY[] }> {
+export function generateBeverlyRoadContours(): Array<{ level: number; path: XY[] }> {
   const points: Feature<Point, { elevation: number }>[] = [];
   for (let y = 0; y <= 9.0001; y += 0.05) {
     for (let x = 9; x <= 28.0001; x += 0.05) points.push(point([x, y], { elevation: elevationAt(x, y) }));
@@ -1235,9 +1155,9 @@ function generateBeverlyRoads(
   output: RoadDefinition[],
   contours: readonly { level: number; path: XY[] }[],
 ): void {
-  const gridSize = 0.1;
-  const columns = 191;
-  const rows = 67;
+  const gridSize = 0.05;
+  const columns = 381;
+  const rows = 133;
   const positionAt = (id: number): XY => [9 + (id % columns) * gridSize, 2.35 + Math.floor(id / columns) * gridSize];
   const gridId = ([x, y]: XY): number => Math.round((y - 2.35) / gridSize) * columns + Math.round((x - 9) / gridSize);
   const roadClearance = 0.012 / 2 + 0.001;
@@ -1278,6 +1198,8 @@ function generateBeverlyRoads(
   const directions: readonly XY[] = [
     [-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [-1, 1], [1, -1], [1, 1],
     [-2, -1], [-2, 1], [2, -1], [2, 1], [-1, -2], [1, -2], [-1, 2], [1, 2],
+    ...[3, 4, 5].flatMap(long => [-1, 1].flatMap(x => [-1, 1].flatMap(y => [[x * long, y], [x, y * long]] as XY[]))),
+    ...[-1, 1].flatMap(x => [-1, 1].flatMap(y => [[x * 3, y * 2], [x * 2, y * 3]] as XY[])),
   ];
   const gradeLimit = 0.08;
   const routeGradeLimit = 0.075;
@@ -1344,7 +1266,10 @@ function generateBeverlyRoads(
         const nextY = y + dy;
         if (nextX < 0 || nextX >= columns || nextY < 0 || nextY >= rows) continue;
         const next = nextY * columns + nextX;
-        if (!allowed[next] || visited[next]) continue;
+        if (!allowed[next]) continue;
+        const priorDirection = directions[directionOf(currentState)];
+        if (priorDirection && (priorDirection[0] * dx + priorDirection[1] * dy)
+          / Math.hypot(...priorDirection) / Math.hypot(dx, dy) < Math.cos(12 * Math.PI / 180)) continue;
         const second = positionAt(next);
         const length = Math.hypot(second[0] - first[0], second[1] - first[1]);
         const edgeId = `${Math.min(current, next)}:${Math.max(current, next)}`;
@@ -1523,11 +1448,24 @@ function generateBeverlyRoads(
       const start = path[span.start]!;
       const end = path[span.end]!;
       let replacement: XY[] | undefined;
+      const length = Math.hypot(end[0] - start[0], end[1] - start[1]);
+      for (const amplitude of [0.06, -0.06, 0.04, -0.04, 0.02, -0.02]) {
+        if (replacement || !length) break;
+        const count = Math.max(32, Math.ceil(length / 0.02));
+        const curved: XY[] = Array.from({ length: count + 1 }, (_, i) => {
+          const t = i / count, offset = amplitude * Math.sin(t * Math.PI) ** 2;
+          return [start[0] + (end[0] - start[0]) * t - (end[1] - start[1]) / length * offset,
+            start[1] + (end[1] - start[1]) * t + (end[0] - start[0]) / length * offset];
+        });
+        if (curved.every(p => pointInRing(p, beverlyDistrict.ring)) && pathAvoidsExclusions(curved)
+          && sampledGrade(curved) <= gradeLimit && maximumStraightRun(curved) < 0.6 - 0.00014) replacement = curved;
+      }
       let routeError = "no candidate path met the exported grade, curvature, district, and landmark constraints";
       const failures: string[] = [];
       const startAnchors = gradeSafeGridAnchors(start);
       const endAnchors = gradeSafeGridAnchors(end);
       for (const startAnchor of startAnchors) {
+        if (replacement) break;
         for (const endAnchor of endAnchors) {
           try {
             const gridPath = route(startAnchor, endAnchor);
@@ -1576,7 +1514,7 @@ function generateBeverlyRoads(
       if (!allowed[goalId] || sampledGrade([positionAt(goalId), contourPoint]) > gradeLimit) continue;
       try {
         const gridPath = route(gridPoint, contourPoint);
-        for (const candidate of [smoothPath(gridPath), gridPath]) {
+        for (const candidate of [smoothPath(smoothPath(smoothPath(gridPath))), smoothPath(gridPath), gridPath]) {
           const path: XY[] = [];
           for (const position of [arterialPoint, ...candidate, contourPoint]) {
             if (!path.length || Math.hypot(position[0] - path.at(-1)![0], position[1] - path.at(-1)![1]) > 1e-8) {
@@ -1611,22 +1549,22 @@ function generateBeverlyRoads(
     }
     throw new Error(`Cannot snap Beverly hill-road access to ${road.id}.`);
   };
-  const a2Anchor = insertRoadVertex(a2, closestPointOnRoad([9.1, 2.35], a2));
-  const a2Start = positionAt(gridId(a2Anchor));
+  const a2Anchor = insertRoadVertex(a2, closestPointOnRoad([19.1, 2.35], a2));
+  const a2Start: XY = [19.1, 2.35];
   const a3Anchor = insertRoadVertex(a3, closestPointOnRoad([28, 9], a3));
-  const a3Start: XY = [27.9, 8.95];
+  const a3Start: XY = [27.6, 8.75];
   const a3StartId = gridId(a3Start);
-  if (!allowed[gridId(a2Anchor)] || !allowed[a3StartId]) {
+  if (!allowed[gridId(a2Start)] || !allowed[a3StartId]) {
     throw new Error("Beverly A2/A3 connector starts must lie inside the road-search grid.");
   }
 
   const eligibleContours = contours
-    .filter(({ level, path }) => [160, 200, 240].includes(level)
+    .filter(({ level, path }) => [200, 240].includes(level)
       && Math.hypot(path[0]![0] - path.at(-1)![0], path[0]![1] - path.at(-1)![1]) <= 0.001
       && sampledGrade(path) <= gradeLimit)
     .sort((first, second) => first.level - second.level)
-    .slice(0, 3);
-  if (eligibleContours.length !== 3) throw new Error("Three closed Beverly contours must meet the sampled grade limit.");
+    .slice(0, 2);
+  if (eligibleContours.length !== 2) throw new Error("Two closed Beverly contours must meet the sampled grade limit.");
 
   const arc = (path: readonly XY[], start: number, end: number): XY[] => {
     const result: XY[] = [path[start]!];
@@ -1638,10 +1576,15 @@ function generateBeverlyRoads(
     return result;
   };
   for (const contour of eligibleContours) {
-    const loop = contour.path.slice(0, -1);
+    let loop = contour.path.slice(0, -1);
     if (loop.length < 4) throw new Error(`Beverly ${contour.level} m contour has too few points for a road loop.`);
-    const firstAccess = connectToContour(a2Anchor, a2Start, loop, a2Anchor);
-    const secondAccess = contour.level === 160
+    const firstAccess = connectToContour(a2Anchor, a2Start, loop, [25.5, 4.2]);
+    const arrival = firstAccess.path.at(-2)!, joint = loop[firstAccess.index]!, following = loop[(firstAccess.index + 1) % loop.length]!;
+    if ((joint[0] - arrival[0]) * (following[0] - joint[0]) + (joint[1] - arrival[1]) * (following[1] - joint[1]) < 0) {
+      loop = loop.reverse();
+      firstAccess.index = loop.length - 1 - firstAccess.index;
+    }
+    const secondAccess = contour.level === 200
       ? connectToContour(a3Anchor, a3Start, loop, a3Anchor)
       : undefined;
     const start = firstAccess.index;
@@ -1653,13 +1596,10 @@ function generateBeverlyRoads(
       const uniqueLoop = loop.slice(0, -1);
       const ordered = [...uniqueLoop.slice(start), ...uniqueLoop.slice(0, start), uniqueLoop[start]!];
       const routedPath = rerouteLongStraightRuns([...firstAccess.path, ...ordered.slice(1)]);
-      const firstSplit = Math.floor((routedPath.length - 1) / 3);
-      const secondSplit = Math.floor(2 * (routedPath.length - 1) / 3);
-      const arcs = [
-        routedPath.slice(0, firstSplit + 1),
-        routedPath.slice(firstSplit, secondSplit + 1),
-        routedPath.slice(secondSplit),
-      ];
+      const arcs = Array.from({ length: 4 }, (_, index) => routedPath.slice(
+        Math.floor(index * (routedPath.length - 1) / 4),
+        Math.floor((index + 1) * (routedPath.length - 1) / 4) + 1,
+      ));
       for (const [index, path] of arcs.entries()) {
         const grade = sampledGrade(path);
         if (grade > gradeLimit) throw new Error(`Beverly 200 m road arc exceeds the sampled grade limit: ${(grade * 100).toFixed(2)}%.`);
@@ -1760,46 +1700,6 @@ function generateRuralRoads(output: RoadDefinition[], towns: readonly TownArea[]
   }
 }
 
-function addUptownSupportBuildings(roads: RoadIndex): void {
-  const clusters = ["city-hall", "hospital", "library"];
-  const occupiedFootprints: Array<{ position: XY; width: number; depth: number }> = [];
-  const landmarkFootprints = buildingFeatures.filter((building) =>
-    Number(building.properties?.base) === 0
-    && ["landmark", "monument"].includes(String(building.properties?.kind)),
-  ).map((building) => building.geometry.coordinates[0]!.map(localFromCoordinate) as Ring);
-  const gridOffsets: XY[] = [];
-  for (let y = -0.58; y <= 0.58; y += 0.052) {
-    for (let x = -0.58; x <= 0.58; x += 0.052) gridOffsets.push([x, y]);
-  }
-  for (const id of clusters) {
-    const place = pointById.get(id)!;
-    const supportRing = localRect(place.position, 1.2, 1.2);
-    if (!within(supportRing, districtById.get("uptown")!.ring)) throw new Error("Uptown support superblock is outside the district.");
-    let created = 0;
-    for (const [dx, dy] of gridOffsets) {
-      if (created >= 150) break;
-      const position: XY = [place.position[0] + dx, place.position[1] + dy];
-      if (Math.hypot(dx, dy) > 0.6) continue;
-      const width = 0.0251 + rand() * 0.0348;
-      const depth = 0.0251 + rand() * 0.0348;
-      if (Math.hypot(dx, dy) + Math.hypot(width / 2, depth / 2) > 0.6) continue;
-      if (occupiedFootprints.some((previous) =>
-        Math.abs(position[0] - previous.position[0]) < (width + previous.width) / 2 + 0.00025
-        && Math.abs(position[1] - previous.position[1]) < (depth + previous.depth) / 2 + 0.00025,
-      )) continue;
-      const ring = localRect(position, width, depth);
-      if (!within(ring, supportRing) || !within(ring, districtById.get("uptown")!.ring) || !footprintAllowed(ring, roads)) continue;
-      if (landmarkFootprints.some((footprint) => !disjoint(ring, footprint))) continue;
-      const blockId = `S-${id}-${String(created).padStart(3, "0")}`;
-      blockFeatures.push(feature(polygonGeometry([ring]), { block_id: blockId, kind: "block", zone: "uptown" }));
-      const top = 10 + Math.floor(rand() * 36);
-      buildingSegments(position, width, depth, top, "uptown-support", blockId);
-      occupiedFootprints.push({ position, width, depth });
-      created += 1;
-    }
-    if (created < 150) throw new Error("Could not generate the required Uptown support-building cluster around " + id + ".");
-  }
-}
 
 function randomInsideRing(ring: Ring, width: number, depth: number): XY {
   const xs = ring.map(([x]) => x);
@@ -1948,109 +1848,8 @@ function generateFarmAndPortSurfaces(
   return surfaces;
 }
 
-function addPortWarehouses(roads: RoadIndex): void {
-  for (let index = 0; index < 16; index += 1) {
-    const pier = Math.floor(index / 2);
-    const y = 26.2 + pier * 0.55 + (index % 2 === 0 ? -0.13 : 0.13);
-    let shoreX = 0;
-    for (let pointIndex = 1; pointIndex < coastline.length; pointIndex += 1) {
-      const a = coastline[pointIndex - 1]!;
-      const b = coastline[pointIndex]!;
-      if (y < Math.min(a[1], b[1]) || y > Math.max(a[1], b[1]) || Math.abs(a[1] - b[1]) < 1e-10) continue;
-      const t = (y - a[1]) / (b[1] - a[1]);
-      shoreX = a[0] + (b[0] - a[0]) * t;
-      break;
-    }
-    const position: XY = [shoreX + 0.24 + (index % 2) * 0.21, y];
-    const width = 0.07 + rand() * 0.045;
-    const depth = 0.055 + rand() * 0.035;
-    const ring = localRect(position, width, depth, -2);
-    if (!within(ring, districtById.get("fleet-port")!.ring) || !footprintAllowed(ring, roads)) continue;
-    const blockId = "P-" + String(index).padStart(2, "0");
-    const block = addBlock(ring, "warehouse", "block");
-    buildingSegments(position, width, depth, 10 + Math.floor(rand() * 16), "warehouse", block || blockId, -2);
-  }
-}
 
-function addBeverlyVillas(roads: RoadIndex, roadDefinitions: readonly RoadDefinition[], woods: readonly Ring[]): void {
-  const hillRoads = roadDefinitions.filter((road) => road.roadClass === "hillroad");
-  const occupied = new Map<string, XY[]>();
-  let created = 0;
-  const target = 1500;
-  for (const road of hillRoads) {
-    for (let index = 1; index < road.coordinates.length && created < target; index += 1) {
-      const start = road.coordinates[index - 1]!;
-      const end = road.coordinates[index]!;
-      const dx = end[0] - start[0];
-      const dy = end[1] - start[1];
-      const length = Math.hypot(dx, dy);
-      const samples = Math.max(1, Math.ceil(length / 0.025));
-      for (let sample = 0; sample < samples && created < target; sample += 1) {
-        const t = sample / samples;
-        const onRoad: XY = [start[0] + dx * t, start[1] + dy * t];
-        for (const side of [-1, 1]) {
-          const position: XY = [onRoad[0] - dy / (length || 1) * 0.065 * side, onRoad[1] + dx / (length || 1) * 0.065 * side];
-          const width = 0.0122 + rand() * 0.0156;
-          const depth = 0.0122 + rand() * 0.0156;
-          const footprint = localRect(position, width, depth);
-          const terrainSamples = [position, ...footprint.slice(0, -1)];
-          if (!within(footprint, beverlyDistrict.ring)
-            || terrainSamples.some((sample) => elevationAt(sample[0], sample[1]) > 240 || elevationSlope(sample[0], sample[1]) > 0.3)
-            || woods.some((ring) => !disjoint(footprint, ring))
-            || !footprintAllowed(footprint, roads, 0)) continue;
-          const cellX = Math.floor(position[0] / 0.045);
-          const cellY = Math.floor(position[1] / 0.045);
-          let tooClose = false;
-          for (let x = cellX - 2; x <= cellX + 2 && !tooClose; x += 1) {
-            for (let y = cellY - 2; y <= cellY + 2 && !tooClose; y += 1) {
-              for (const previous of occupied.get(`${x}:${y}`) ?? []) {
-                if (Math.hypot(previous[0] - position[0], previous[1] - position[1]) < 0.038) tooClose = true;
-              }
-            }
-          }
-          if (tooClose) continue;
-          const key = `${cellX}:${cellY}`;
-          occupied.set(key, [...(occupied.get(key) ?? []), position]);
-          const parcel = localRect(position, 0.035, 0.035);
-          if (!within(parcel, beverlyDistrict.ring)) continue;
-          const block = addBlock(parcel, "beverly", "block");
-          buildingSegments(position, width, depth, 6 + Math.floor(rand() * 9), "villa", block);
-          created += 1;
-          if (created >= target) break;
-        }
-      }
-    }
-  }
-  if (created < 1500 || created > 3000) throw new Error(`Beverly generated ${created} villas; expected 1,500-3,000.`);
-}
 
-function addReserveTownBuildings(towns: readonly TownArea[], roads: RoadIndex): void {
-  for (const town of towns) {
-    const block = `T-${town.id}`;
-    blockFeatures.push(feature(polygonGeometry([town.ring]), {
-      block_id: block, town_id: town.id, kind: "town", zone: "reserve",
-    }));
-    let created = 0;
-    for (let row = -8; row <= 8 && created < 100; row += 1) {
-      for (let column = -8; column <= 8 && created < 100; column += 1) {
-        const candidate: XY = [town.center[0] + column * 0.045, town.center[1] + row * 0.045];
-        const centerDistance = Math.hypot(town.center[0] - candidate[0], town.center[1] - candidate[1]);
-        const inset = centerDistance === 0 ? 0 : 0.04 / centerDistance;
-        const position: XY = [
-          candidate[0] + (town.center[0] - candidate[0]) * inset,
-          candidate[1] + (town.center[1] - candidate[1]) * inset,
-        ];
-        const width = 0.0102 + rand() * 0.0146;
-        const depth = 0.0102 + rand() * 0.0146;
-        const footprint = localRect(position, width, depth);
-        if (!within(footprint, town.ring) || !footprintAllowed(footprint, roads, 0)) continue;
-        buildingSegments(position, width, depth, 5 + Math.floor(rand() * 8), "town-house", block);
-        created += 1;
-      }
-    }
-    if (created < 60 || created > 200) throw new Error(`Reserve town ${town.id} generated ${created} houses; expected 60-200.`);
-  }
-}
 
 function generateTrees(): Feature<Polygon, Properties>[] {
   const lake: Ring = close([[4.72, 6.08], [5.2, 6.08], [5.28, 6.52], [4.78, 6.58]]);
@@ -2094,11 +1893,12 @@ function generateLabels(): Feature<Point, Properties>[] {
   });
 }
 
-function generateMetro(roads: readonly RoadDefinition[]): { lines: Feature<LineString, Properties>[]; stationFeatures: Feature<Point, Properties>[] } {
-  const routes = routeOnRoads(stations, transitLines, roads);
+function generateMetro(): { lines: Feature<LineString, Properties>[]; stationFeatures: Feature<Point, Properties>[] } {
+  const routes = metroPaths();
   const lineFeatures = transitLines.map(({ id, color, stations: stopIds }) => {
     const route = routes.get(id)!;
-    return feature(lineGeometry(route), { id, name: id, color, stations: stopIds.join(",") });
+    const stopPositions = stations.filter(station => stopIds.includes(station.id)).map(station => station.position);
+    return feature(lineGeometry(cleanRoundedPath(route, stopPositions)), { id, name: id, color, stations: stopIds.join(",") });
   });
   const membership = new Map<string, string[]>();
   for (const line of transitLines) {
@@ -2121,16 +1921,8 @@ function generateSurfaces(woods: readonly Feature<Polygon, Properties>[], woodsR
 function generateBlocksAndBuildings(
   roads: RoadIndex,
   coast: RoadIndex,
-  roadDefinitions: readonly RoadDefinition[],
-  woods: readonly Ring[],
-  towns: readonly TownArea[],
 ): void {
   generateManhattanBlocks(roads, coast);
-  addUptownSupportBuildings(roads);
-  addPortWarehouses(roads);
-  addBeverlyVillas(roads, roadDefinitions, woods);
-  addReserveTownBuildings(towns, roads);
-  classifyBlocks();
 }
 
 function classifyBlocks(): void {
@@ -2173,6 +1965,24 @@ function classifyBlocks(): void {
   }
 }
 
+export function generateSourceRoadsForValidation(contours = generateBeverlyRoadContours()): RoadDefinition[] {
+  if (!roadExclusions.length) addPlazaAndLandmarks();
+  const roads = generateRoadNetwork();
+  roads.push(...regionalArterials());
+  generateBeverlyRoads(roads, contours);
+  generateRuralRoads(roads, createTownAreas());
+  return roads;
+}
+
+export function generateRoadsForValidation(contours = generateBeverlyRoadContours()): RoadDefinition[] {
+  const source = generateSourceRoadsForValidation(contours).map(road => road.roadClass === "hillroad"
+    ? { ...road, coordinates: roundHillroadTurns(road.coordinates, beverlyElevationAt, p => pointInRing(p, beverlyDistrict.ring)
+      && roadExclusions.every(ring => !pointInRing(p, ring))) } : road);
+  const prepared = prepareRoadNetwork(source).map(road => road.roadClass === "hillroad" || road.roadClass === "street"
+    ? road : { ...road, coordinates: roundHillroadTurns(road.coordinates, () => 0) });
+  return finalizeRoadNetwork(clipRoadsAroundLandmarks(prepared, roadExclusions));
+}
+
 export function generateData(): Record<string, Collection> {
   rand = rng(0x4d4f4e41);
   landRand = rng(0x4c414e44);
@@ -2182,19 +1992,15 @@ export function generateData(): Record<string, Collection> {
   roadExclusions.length = 0;
   nextBuildingId = 0;
   nextBlockId = 0;
-  const generatedRoads = generateRoadNetwork();
   const towns = createTownAreas();
   addPlazaAndLandmarks();
-  generateRegionalTexture(generatedRoads);
   const terrain = generateBeverlyTerrain();
-  generateBeverlyRoads(generatedRoads, terrain.contourPaths);
-  generateRuralRoads(generatedRoads, towns);
-  const clippedRoads = clipRoadsAroundLandmarks(generatedRoads, roadExclusions);
+  const clippedRoads = generateRoadsForValidation(terrain.contourPaths);
   const roadIndex = buildRoadIndex(clippedRoads);
   const coastIndex = buildRoadIndex([{ id: "coastal-setback", name: "", roadClass: "local", width: 0.06, coordinates: coastline }]);
   const woods = generateWoods(towns);
-  generateBlocksAndBuildings(roadIndex, coastIndex, clippedRoads, woods.rings, towns);
-  const metro = generateMetro(clippedRoads);
+  generateBlocksAndBuildings(roadIndex, coastIndex);
+  const metro = generateMetro();
 
   const landFeatures = land.map(({ kind, id, name, ring }) => feature(
     { type: "Polygon", coordinates: [ring.map(coordinate)] },
@@ -2223,9 +2029,23 @@ export function generateData(): Record<string, Collection> {
     item.properties.furrow = vertices.reduce((sum, [, y]) => sum + y, 0) / vertices.length > 25 ? "north" : "east";
   }
   const terrainFeatures = [...terrain.bands, ...terrain.contours];
-  const overviewFeatures = [...terrain.bands, ...woods.features];
-  const atlasFeatures = generateAtlas(landFeatures.find((item) => item.properties?.kind === "monaco")!,
-    districtFeatures, surfaceFeatures, terrain.bands, blockFeatures, beverlyElevationAt);
+  for (const town of towns) blockFeatures.push(feature(polygonGeometry([town.ring]), { kind: 'town', type: 'town', zone: 'reserve', town_id: town.id }));
+  surfaceFeatures.push(feature(polygonGeometry([airportRing]), { kind: 'airport', id: 'airport' }));
+  for (const [index, endpoints] of airportRunways.entries()) {
+    const center: XY = [(endpoints[0][0] + endpoints[1][0]) / 2, (endpoints[0][1] + endpoints[1][1]) / 2];
+    surfaceFeatures.push(feature(polygonGeometry([rectangleRing(center, airport.runwayLength, airport.runwayWidth, airport.angle)]), { kind: 'runway', runway: index }));
+  }
+  surfaceFeatures.push(feature(polygonGeometry([airportApron]), { kind: 'airport-apron' }));
+  for (const ring of airportTaxiways) surfaceFeatures.push(feature(polygonGeometry([ring]), { kind: 'airport-taxiway' }));
+  for (const ring of airportPiers) surfaceFeatures.push(feature(polygonGeometry([ring]), { kind: 'airport-pier' }));
+  for (const ring of airportAircraft) surfaceFeatures.push(feature(polygonGeometry([ring]), { kind: 'airport-aircraft' }));
+  const terminal = airportPosition(0, -0.3);
+  const airportBlock = addBlock(rectangleRing(terminal, 1.1, 0.15, airport.angle), 'harlem', 'block');
+  buildingSegments(terminal, 1.1, 0.15, 30, 'landmark', airportBlock, airport.angle * 180 / Math.PI, { id: 'airport', name: '机场' });
+  const tower = airportPosition(-0.8, -0.4);
+  const towerBlock = addBlock(rectangleRing(tower, 0.06, 0.06, airport.angle), 'harlem', 'block');
+  buildingSegments(tower, 0.06, 0.06, 60, 'landmark', towerBlock, airport.angle * 180 / Math.PI, { id: 'airport', name: '机场' });
+  classifyBlocks();
   return {
     land: collection(landFeatures),
     districts: collection(districtFeatures),
@@ -2238,8 +2058,6 @@ export function generateData(): Record<string, Collection> {
     blocks: collection([...blockFeatures]),
     trees: collection(treeFeatures),
     terrain: collection(terrainFeatures),
-    overview: collection(overviewFeatures),
-    atlas: collection(atlasFeatures),
     labels: collection(generateLabels()),
     boundaries: collection(boundaryFeatures),
     surface: collection(surfaceFeatures),

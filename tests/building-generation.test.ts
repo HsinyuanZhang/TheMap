@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
-import { booleanDisjoint, booleanWithin } from '@turf/turf';
+import { booleanWithin } from '@turf/turf';
 import type { Feature, FeatureCollection, LineString, Polygon, Position } from 'geojson';
-import { points } from '../data/source';
 import { assertRoadClearance, type Road, type Ring } from '../scripts/data-invariants';
 
 type Properties = Record<string, string | number | boolean>;
@@ -111,19 +110,6 @@ test('generated buildings and blocks meet Phase 3 count, height, type, support, 
   }
   assert.deepEqual([...manhattanTypes].filter((type) => ['highrise', 'midrise', 'lowrise'].includes(type)).sort(),
     ['highrise', 'lowrise', 'midrise']);
-  const brooklynBlocks = blocks.features.filter((item) => item.properties?.kind === 'superblock' && item.properties?.zone === 'brooklyn');
-  const brooklynMidriseShare = brooklynBlocks.filter((item) => item.properties?.type === 'midrise').length / brooklynBlocks.length;
-  assert.ok(brooklynMidriseShare >= 0.19 && brooklynMidriseShare <= 0.21,
-    'about one fifth of Brooklyn superblocks must be midrise');
-
-  const blockById = new Map(blocks.features.map((block) => [String(block.properties?.block_id), block as PolygonFeature]));
-  const supportSites = ['city-hall', 'hospital', 'library'];
-  const supports = buildings.features.filter((item) => item.properties?.kind === 'uptown-support') as PolygonFeature[];
-  assert.equal(supports.length, 450, 'the three Uptown sites require 150 support buildings each');
-  const supportCounts = Object.fromEntries(supportSites.map((id) => [id, 0]));
-  const buildingIndex = new Map<string, PolygonFeature[]>();
-  const baseFootprints = buildings.features.filter((item) => Number(item.properties?.base) === 0) as PolygonFeature[];
-
   const roadCollection = JSON.parse(await readFile(new URL('../public/data/roads.geojson', import.meta.url), 'utf8')) as FeatureCollection<LineString, Properties>;
   const roadCellSize = 0.25;
   const roadIndex = new Map<string, Road[]>();
@@ -144,53 +130,23 @@ test('generated buildings and blocks meet Phase 3 count, height, type, support, 
       for (const cell of boundsCells(bounds, roadCellSize)) roadIndex.set(cell, [...(roadIndex.get(cell) ?? []), segment]);
     }
   }
+  const baseFootprints = buildings.features.filter((item) => Number(item.properties?.base) === 0) as PolygonFeature[];
   for (const footprint of baseFootprints) {
-    for (const cell of boundsCells(polygonBounds(footprint), 0.1)) {
-      buildingIndex.set(cell, [...(buildingIndex.get(cell) ?? []), footprint]);
-    }
     const roadCells = boundsCells(polygonBounds(footprint), roadCellSize);
     const nearbyRoads = new Set(roadCells.flatMap((cell) => roadIndex.get(cell) ?? []));
     const ring = footprint.geometry.coordinates[0]!.map(toLocal) as Ring;
     assertRoadClearance(ring, [...nearbyRoads]);
   }
-  for (const support of supports) {
-    const blockId = String(support.properties?.block_id);
-    const siteId = supportSites.find((id) => blockId.startsWith(`S-${id}-`));
-    assert.ok(siteId, `${blockId} must retain a stable support-site block ID`);
-    supportCounts[siteId] += 1;
-    const parent = blockById.get(blockId);
-    assert.ok(parent && parent.properties?.zone === 'uptown' && parent.properties?.kind === 'block');
-    assert.ok(booleanWithin(support, parent), `${blockId} footprint must remain inside its linked block`);
-    const bounds = polygonBounds(support);
-    const width = bounds.maxX - bounds.minX;
-    const depth = bounds.maxY - bounds.minY;
-    assert.ok(width >= 0.025 && width <= 0.06 && depth >= 0.025 && depth <= 0.06,
-      `${blockId} support footprint must measure 25-60 m per side`);
-    const anchor = points.find((item) => item.id === siteId)!.position;
-    const center: [number, number] = [(bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2];
-    assert.ok(Math.hypot(center[0] - anchor[0], center[1] - anchor[1]) + Math.hypot(width / 2, depth / 2) <= 0.6002,
-      `${blockId} entire footprint must stay within 600 m of its site`);
-
-    const cells = boundsCells(bounds, 0.1);
-    const candidates = new Set(cells.flatMap((cell) => buildingIndex.get(cell) ?? []));
-    for (const candidate of candidates) {
-      if (candidate !== support) assert.ok(booleanDisjoint(support, candidate), `${blockId} support footprint must not overlap any building`);
-    }
-  }
-  assert.ok(Object.values(supportCounts).every((count) => count === 150));
-
+  assert.ok(!blocks.features.some((item) => item.properties?.kind === 'superblock'));
+  assert.ok(!buildings.features.some((item) => ['uptown-support', 'villa', 'town-house', 'warehouse'].includes(String(item.properties?.kind))));
   const monuments = buildings.features.filter((item) => item.properties?.kind === 'monument');
   const monumentIds = new Set(monuments.map((item) => String(item.properties?.id)));
   assert.deepEqual([...monumentIds].sort(), ['church', 'old-governors-house', 'republic-monument']);
   assert.ok(monuments.every((item) => Number(item.properties?.key) === 1));
   const monumentPlazas = blocks.features.filter((item) => item.properties?.kind === 'plaza' && typeof item.properties?.monument_id === 'string');
   assert.deepEqual(monumentPlazas.map((item) => String(item.properties?.monument_id)).sort(), [...monumentIds].sort());
-  assert.ok(supports.every((support) => monumentPlazas.every((plaza) => booleanDisjoint(support, plaza as PolygonFeature))),
-    'support buildings must not enter monument exclusion areas');
-
   console.log(`Building bids: Manhattan=${manhattanBids.length}; total=${bids.size}; key=${keyBids.size} bids/${keySegments} segments.`);
   console.log(`Manhattan heights: median=${median} m; <45=${heights.filter((height) => height < 45).length}; 45-90=${heights.filter((height) => height >= 45 && height < 90).length}; 90-150=${heights.filter((height) => height >= 90 && height <= 150).length}; >150=${above150} (${(above150 / heights.length * 100).toFixed(2)}%); >300=${above300}.`);
-  console.log(`Block types: ${[...new Set(blocks.features.map((item) => String(item.properties?.type)))].sort().join(', ')}; Brooklyn midrise=${(brooklynMidriseShare * 100).toFixed(2)}%.`);
+  console.log(`Block types: ${[...new Set(blocks.features.map((item) => String(item.properties?.type)))].sort().join(', ')}.`);
   console.log(`Road clearance: ${baseFootprints.length} base footprints checked against road-width buffers.`);
-  console.log(`Uptown support buildings: ${supports.length} (150 per site), all linked, 25-60 m, within 600 m, no overlaps; monuments=${[...monumentIds].sort().join(', ')}.`);
 });

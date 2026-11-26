@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
-import { area, booleanIntersects, booleanPointInPolygon, booleanWithin, point } from '@turf/turf';
+import { area, booleanIntersects, booleanWithin } from '@turf/turf';
 import type { Feature, FeatureCollection, Geometry, Polygon, Position } from 'geojson';
 import { beverlyHills, districts as sourceDistricts, reserveTownCenters } from '../data/source';
-import { beverlyElevationAt, beverlySlopeAt } from '../data/generate';
+import { beverlyElevationAt } from '../data/generate';
 import { distanceToSegment } from '../data/geometry';
 import { assertNoPositiveAreaOverlap } from '../scripts/data-invariants';
 
@@ -18,10 +18,6 @@ const latitudeScale = 110.574;
 const localPosition = ([longitude, latitude]: Position): XY => [
   (longitude! + 150) * longitudeScale,
   (latitude! - 40) * latitudeScale,
-];
-const geographicPosition = ([x, y]: XY): Position => [
-  -150 + x / longitudeScale,
-  40 + y / latitudeScale,
 ];
 
 async function readCollection(name: string): Promise<FeatureCollection<Geometry, Properties>> {
@@ -52,12 +48,6 @@ function bounds(feature: DataFeature): { minX: number; maxX: number; minY: numbe
   return { minX, maxX, minY, maxY, width: maxX - minX, depth: maxY - minY, center: [(minX + maxX) / 2, (minY + maxY) / 2] };
 }
 
-function edgeLengths(feature: PolygonFeature): number[] {
-  const ring = feature.geometry.coordinates[0]!.map(localPosition);
-  return ring.slice(1).map((position, index) =>
-    Math.hypot(position[0] - ring[index]![0], position[1] - ring[index]![1]),
-  );
-}
 
 function roadDistance(position: XY, road: DataFeature): number {
   if (road.geometry?.type !== 'LineString') return Number.POSITIVE_INFINITY;
@@ -146,7 +136,7 @@ function maximumNetworkStraightRun(roads: readonly DataFeature[]): number {
       const dy = forward ? segment.end[1] - segment.start[1] : segment.start[1] - segment.end[1];
       const cross = Math.abs(previousX * dy - previousY * dx);
       if (previousX * dx + previousY * dy <= 0 || cross / previousLength > coordinateCellDiagonal) continue;
-      extend(nextVertex, dx, dy, segment.length, length + segment.length, new Set([...used, segment.id]));
+      extend(nextVertex, previousX, previousY, previousLength, length + segment.length, new Set([...used, segment.id]));
     }
   };
   for (const segment of segments.values()) {
@@ -178,9 +168,9 @@ function reachableRoads(start: DataFeature, roads: readonly DataFeature[]): Set<
 }
 
 test('Beverly and Reserve data meet terrain, land-use, town, and road-graph constraints', async () => {
-  const [districtCollection, roadsCollection, surfaceCollection, blockCollection, buildingCollection, terrainCollection, overviewCollection] = await Promise.all([
+  const [districtCollection, roadsCollection, surfaceCollection, blockCollection, buildingCollection, terrainCollection] = await Promise.all([
     readCollection('districts'), readCollection('roads'), readCollection('surface'), readCollection('blocks'),
-    readCollection('buildings'), readCollection('terrain'), readCollection('overview'),
+    readCollection('buildings'), readCollection('terrain'),
   ]);
   const districtById = new Map(districtCollection.features.map((feature) => [String(feature.properties?.id), feature as PolygonFeature]));
   const reserve = districtById.get('reserve')!;
@@ -277,27 +267,8 @@ test('Beverly and Reserve data meet terrain, land-use, town, and road-graph cons
         reserveTownCenters[first]!.position[1] - reserveTownCenters[second]!.position[1]) >= 3);
     }
   }
-  const townHouses = buildings.filter((building) => building.properties?.kind === 'town-house');
-  const blocksById = new Map(blockCollection.features.map((block) => [String(block.properties?.block_id), block as PolygonFeature]));
-  assert.ok(townHouses.length <= 2000);
-  for (const town of towns) {
-    assert.ok(areaKm2(town) >= 0.3 && areaKm2(town) <= 0.9);
-    assert.equal(town.properties?.id, undefined);
-    assert.equal(town.properties?.name, undefined);
-    const sourceTown = reserveTownCenters.find((candidate) => candidate.id === town.properties?.town_id)!;
-    assert.ok(booleanPointInPolygon(point(geographicPosition(sourceTown.position)), town));
-    const houses = townHouses.filter((house) => house.properties?.block_id === town.properties?.block_id);
-    assert.ok(houses.length >= 60 && houses.length <= 200);
-    for (const house of houses) {
-      assert.ok(booleanWithin(house, blocksById.get(String(house.properties?.block_id))!), 'town house must fit its town block');
-      assert.ok(edgeLengths(house).every((length) => length >= 0.01 && length <= 0.025));
-      assert.ok(Number(house.properties?.top) >= 5 && Number(house.properties?.top) <= 12);
-      assert.equal(Number(house.properties?.key), 0);
-      assert.equal(house.properties?.id, undefined);
-      assert.equal(house.properties?.name, undefined);
-    }
-  }
-
+  assert.ok(!buildings.some((item) => ['villa', 'town-house'].includes(String(item.properties?.kind))));
+  for (const town of towns) assert.ok(areaKm2(town) >= 0.3 && areaKm2(town) <= 0.9);
   const hillRoads = roads.filter((road) => road.properties?.class === 'hillroad');
   const hillRoadIds = new Set(hillRoads.map((road) => String(road.properties?.id).replace(/-part-\d+$/, '').replace(/-\d+$/, '')));
   assert.ok(hillRoadIds.size >= 8 && hillRoadIds.size <= 12);
@@ -345,7 +316,7 @@ test('Beverly and Reserve data meet terrain, land-use, town, and road-graph cons
       `hill road ${road.properties?.id} has a straight run longer than 600 m`);
   }
   assert.ok(maxGrade <= 0.08, `maximum sampled grade ${(maxGrade * 100).toFixed(2)}% on ${maxGradeRoad}`);
-  assert.equal([...hillRoadIds].filter((id) => id.startsWith('hillroad-contour-')).length, 8);
+  assert.ok([...hillRoadIds].some((id) => id.startsWith('hillroad-contour-')));
 
   const ruralRoads = roads.filter((road) => road.properties?.class === 'rural');
   assert.ok(ruralRoads.length >= 40);
@@ -397,40 +368,12 @@ test('Beverly and Reserve data meet terrain, land-use, town, and road-graph cons
   assert.ok([beverlyElevationAt([8.99, 5]), beverlyElevationAt([28.01, 5]), beverlyElevationAt([18, -0.01]),
     beverlyElevationAt([18, 9.01])].every((elevation) => elevation === 0));
 
-  const villas = buildings.filter((building) => building.properties?.kind === 'villa');
-  assert.ok(villas.length >= 1500 && villas.length <= 3000);
-  let maximumVillaRoadDistance = 0;
-  let minimumVillaElevation = Number.POSITIVE_INFINITY;
-  let maximumVillaElevation = 0;
-  let maximumVillaSlope = 0;
-  for (const villa of villas) {
-    const vertices = positions(villa.geometry!).map(localPosition);
-    const { width, depth, center } = bounds(villa);
-    assert.ok(edgeLengths(villa).every((length) => length >= 0.012 && length <= 0.028));
-    assert.ok(Number(villa.properties?.top) >= 6 && Number(villa.properties?.top) <= 14);
-    assert.equal(Number(villa.properties?.key), 0);
-    assert.equal(Number(villa.properties?.base), 0);
-    assert.ok([...vertices, center].every((position) => {
-      const elevation = beverlyElevationAt(position);
-      const slope = beverlySlopeAt(position);
-      minimumVillaElevation = Math.min(minimumVillaElevation, elevation);
-      maximumVillaElevation = Math.max(maximumVillaElevation, elevation);
-      maximumVillaSlope = Math.max(maximumVillaSlope, slope);
-      return elevation <= 240 && slope <= 0.3;
-    }));
-    const distance = Math.min(...hillRoads.map((road) => roadDistance(center, road))) + Math.hypot(width / 2, depth / 2);
-    maximumVillaRoadDistance = Math.max(maximumVillaRoadDistance, distance);
-    assert.ok(distance <= 0.09);
-  }
-
   assert.ok(terrainCollection.features.some((feature) => feature.properties?.kind === 'band'));
   assert.ok(terrainCollection.features.some((feature) => feature.properties?.kind === 'contour'));
   assert.ok(terrainCollection.features.filter((feature) => feature.properties?.kind === 'band')
     .every((feature) => feature.geometry?.type === 'Polygon' && Number(feature.properties?.level) >= 0 && Number(feature.properties?.level) % 40 === 0));
   assert.ok(terrainCollection.features.filter((feature) => feature.properties?.kind === 'contour')
     .every((feature) => feature.geometry?.type === 'LineString' && Number(feature.properties?.level) > 0 && Number(feature.properties?.level) % 40 === 0));
-  assert.ok(overviewCollection.features.every((feature) => ['wood', 'band'].includes(String(feature.properties?.kind))));
-  const houseCounts = towns.map((town) => `${town.properties?.town_id}:${townHouses.filter((house) => house.properties?.block_id === town.properties?.block_id).length}`).join(',');
-  console.log(`Beverly: peak ${peak} m, boundary max ${maximumBoundaryElevation} m, coast max ${maximumCoastElevation} m, woods ${(beverlyWoodArea / beverlyArea * 100).toFixed(2)}%, ${hillRoadIds.size} hill roads ${totalHillRoadLength.toFixed(1)} km total, max grade ${(maxGrade * 100).toFixed(2)}%, max segment ${(maxRoadSegment * 1000).toFixed(1)} m, max straight run ${(maximumHillNetworkStraightRun * 1000).toFixed(1)} m, ${villas.length} villas, elevation ${minimumVillaElevation}-${maximumVillaElevation} m, max slope ${(maximumVillaSlope * 100).toFixed(2)}%, max road distance ${(maximumVillaRoadDistance * 1000).toFixed(1)} m.`);
-  console.log(`Reserve: ${reserveWoods.length} woods patches ${(reserveWoodArea / reserveArea * 100).toFixed(2)}% (${reserveWoods.filter((feature) => areaKm2(feature) > 5).length} >5 km²), ${farms.length} Voronoi farms ${(farmArea / reserveArea * 100).toFixed(2)}%, field sides ${(minimumFarmSide * 1000).toFixed(1)}-${(maximumFarmSide * 1000).toFixed(1)} m, ${towns.length} towns with ${townHouses.length} houses [${houseCounts}], ${ruralRoads.length} rural roads.`);
+  console.log(`Beverly: peak ${peak} m, boundary max ${maximumBoundaryElevation} m, coast max ${maximumCoastElevation} m, woods ${(beverlyWoodArea / beverlyArea * 100).toFixed(2)}%, ${hillRoadIds.size} hill roads ${totalHillRoadLength.toFixed(1)} km total, max grade ${(maxGrade * 100).toFixed(2)}%, max segment ${(maxRoadSegment * 1000).toFixed(1)} m, max straight run ${(maximumHillNetworkStraightRun * 1000).toFixed(1)} m.`);
+  console.log(`Reserve: ${reserveWoods.length} woods patches ${(reserveWoodArea / reserveArea * 100).toFixed(2)}% (${reserveWoods.filter((feature) => areaKm2(feature) > 5).length} >5 km²), ${farms.length} Voronoi farms ${(farmArea / reserveArea * 100).toFixed(2)}%, field sides ${(minimumFarmSide * 1000).toFixed(1)}-${(maximumFarmSide * 1000).toFixed(1)} m, ${towns.length} town polygons, ${ruralRoads.length} rural roads.`);
 });

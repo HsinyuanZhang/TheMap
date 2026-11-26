@@ -10,7 +10,7 @@ export interface DeferredPatternLayer {
 
 type PatternMap = Pick<MapLibreMap, 'hasImage' | 'addImage' | 'getLayer' | 'addLayer'>;
 
-const regionalPatternLayerIds = new Set(['superblock-texture', 'wood-canopy', 'farm-furrows', 'wood-clumps']);
+const regionalPatternLayerIds = new Set(['wood-canopy', 'farm-furrows']);
 
 export function deferRegionalPatternLayers(style: StyleSpecification): {
   style: StyleSpecification;

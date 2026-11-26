@@ -39,7 +39,6 @@ export const MAP_LEGEND_ITEMS = [
   { label: '小城镇', swatch: MAP_PALETTE.blockTypes.town },
   { label: '广场', swatch: MAP_PALETTE.blockTypes.plaza },
   { label: '地形色带', swatch: terrainSwatch },
-  { label: '六边形概览（主导地貌）', swatch: '#b7c6a1' },
   { label: '树林', swatch: MAP_PALETTE.woods },
   { label: '农田', swatch: farmSwatch },
   { label: '军事区', swatch: MAP_PALETTE.military },
@@ -181,8 +180,6 @@ function sourceData(datasets: MapDatasets): StyleSpecification['sources'] {
     trees: { type: 'geojson', data: datasets.trees },
     surface: { type: 'geojson', data: datasets.surface },
     terrain: { type: 'geojson', data: datasets.terrain },
-    overview: { type: 'geojson', data: datasets.overview },
-    atlas: { type: 'geojson', data: datasets.atlas },
     annotations: { type: 'geojson', data: createPointAnnotations(datasets) },
   } as StyleSpecification['sources'];
 }
@@ -239,24 +236,9 @@ export function createMapStyle(baseUrl: string, datasets: MapDatasets, selectedI
       filter: ['==', ['get', 'kind'], 'reserve-city'],
       paint: { 'line-color': MAP_PALETTE.boundary, 'line-width': 2.2, 'line-opacity': 0.9 },
     },
+
     {
-      id: 'hex-overview', type: 'fill', source: 'atlas', maxzoom: MAP_ZOOM.hexFadeEnd,
-      filter: ['==', ['get', 'kind'], 'hex'],
-      paint: {
-        'fill-color': ['match', ['get', 'class'],
-          'wood', MAP_PALETTE.woods, 'farm', '#cbd2a3',
-          'hill', ['step', ['get', 'level'], MAP_PALETTE.terrainBands[0],
-            80, MAP_PALETTE.terrainBands[80], 160, MAP_PALETTE.terrainBands[160], 240, MAP_PALETTE.terrainBands[240]],
-          'highrise', MAP_PALETTE.blockTypes.highrise, 'midrise', MAP_PALETTE.blockTypes.midrise,
-          'lowrise', MAP_PALETTE.blockTypes.lowrise, 'lowdensity', MAP_PALETTE.blockTypes.lowdensity,
-          'town', MAP_PALETTE.blockTypes.town, 'plaza', MAP_PALETTE.blockTypes.plaza,
-          ['match', ['get', 'district'], 'reserve', '#dfe8d7', 'fleet-port', MAP_PALETTE.military, '#e5dccb']],
-        'fill-opacity': ['interpolate', ['linear'], ['zoom'], MAP_ZOOM.hexFadeStart, 0.86, MAP_ZOOM.hexFadeEnd, 0],
-        'fill-outline-color': '#c1cbb6',
-      },
-    },
-    {
-      id: 'terrain-bands', type: 'fill', source: 'overview', minzoom: MAP_ZOOM.blocks,
+      id: 'terrain-bands', type: 'fill', source: 'terrain', minzoom: MAP_ZOOM.blocks,
       filter: ['==', ['get', 'kind'], 'band'],
       paint: {
         'fill-color': ['match', ['get', 'level'],
@@ -264,33 +246,21 @@ export function createMapStyle(baseUrl: string, datasets: MapDatasets, selectedI
           80, MAP_PALETTE.terrainBands[80], 120, MAP_PALETTE.terrainBands[120],
           160, MAP_PALETTE.terrainBands[160], 200, MAP_PALETTE.terrainBands[200],
           240, MAP_PALETTE.terrainBands[240], 280, MAP_PALETTE.terrainBands[280], MAP_PALETTE.terrain],
-        'fill-opacity': ['interpolate', ['linear'], ['zoom'], MAP_ZOOM.hexFadeStart, 0, MAP_ZOOM.hexFadeEnd, 0.52],
+        'fill-opacity': ['interpolate', ['linear'], ['zoom'], MAP_ZOOM.surfaceFadeStart, 0, MAP_ZOOM.surfaceFadeEnd, 0.52],
       },
     },
     {
-      id: 'overview-woods', type: 'fill', source: 'overview', minzoom: MAP_ZOOM.woods,
+      id: 'woods-fill', type: 'fill', source: 'surface', minzoom: MAP_ZOOM.woods,
       filter: ['==', ['get', 'kind'], 'wood'],
       paint: { 'fill-color': MAP_PALETTE.woods, 'fill-opacity': fadeIn(MAP_ZOOM.woods, 0.78) },
     },
+
     {
-      id: 'hill-aspect', type: 'fill', source: 'atlas', minzoom: MAP_ZOOM.blocks,
-      filter: ['==', ['get', 'kind'], 'hillshade'],
-      paint: {
-        'fill-color': ['case', ['>', ['get', 'shade'], 0], '#fff4ce', '#505a48'],
-        'fill-opacity': ['interpolate', ['linear'], ['zoom'], MAP_ZOOM.hexFadeStart, 0, MAP_ZOOM.hexFadeEnd, ['*', ['abs', ['get', 'shade']], 0.18]],
-      },
-    },
-    {
-      id: 'wood-canopy', type: 'fill', source: 'overview', minzoom: MAP_ZOOM.woods,
+      id: 'wood-canopy', type: 'fill', source: 'surface', minzoom: MAP_ZOOM.woods,
       filter: ['==', ['get', 'kind'], 'wood'],
       paint: { 'fill-pattern': 'canopy-pattern', 'fill-opacity': fadeIn(MAP_ZOOM.woods, 0.65) },
     },
-    {
-      id: 'wood-clumps', type: 'symbol', source: 'atlas', minzoom: MAP_ZOOM.blocks,
-      filter: ['==', ['get', 'kind'], 'clump'],
-      layout: { 'icon-image': ['match', ['get', 'variant'], 0, 'tree-clump-0', 'tree-clump-1'], 'icon-size': 0.7, 'icon-padding': 30, 'icon-allow-overlap': false, 'icon-ignore-placement': true },
-      paint: { 'icon-opacity': fadeIn(MAP_ZOOM.blocks, 0.85) },
-    },
+
     {
       id: 'contour-shade', type: 'line', source: 'terrain', minzoom: MAP_ZOOM.contours,
       filter: ['==', ['get', 'kind'], 'contour'],
@@ -331,24 +301,8 @@ export function createMapStyle(baseUrl: string, datasets: MapDatasets, selectedI
       filter: ['==', ['get', 'kind'], 'farm'],
       paint: { 'fill-pattern': ['match', ['get', 'furrow'], 'north', 'furrow-north-pattern', 'furrow-east-pattern'], 'fill-opacity': fadeIn(MAP_ZOOM.farms, 0.6) },
     },
-    {
-      id: 'superblocks', type: 'fill', source: 'blocks', minzoom: MAP_ZOOM.blocks,
-      filter: ['==', ['get', 'kind'], 'superblock'],
-      paint: {
-        'fill-color': blockTypeColor,
-        'fill-opacity': ['interpolate', ['linear'], ['zoom'], MAP_ZOOM.hexFadeStart, 0, MAP_ZOOM.hexFadeEnd, 1],
-        'fill-outline-color': MAP_PALETTE.blockTypes.outline,
-      },
-    },
-    {
-      id: 'superblock-texture', type: 'fill', source: 'blocks', minzoom: MAP_ZOOM.texture,
-      filter: ['all', ['==', ['get', 'kind'], 'superblock'],
-        ['in', ['get', 'type'], ['literal', ['lowrise', 'midrise']]]],
-      paint: {
-        'fill-pattern': ['match', ['get', 'type'], 'midrise', 'regional-midrise-pattern', 'regional-lowrise-pattern'],
-        'fill-opacity': fadeIn(MAP_ZOOM.texture, 0.32),
-      },
-    },
+
+
     {
       id: 'parks-fill', type: 'fill', source: 'parks', minzoom: MAP_ZOOM.parks,
       paint: { 'fill-color': MAP_PALETTE.parks, 'fill-opacity': fadeIn(MAP_ZOOM.parks, 0.96) },
@@ -367,7 +321,7 @@ export function createMapStyle(baseUrl: string, datasets: MapDatasets, selectedI
       filter: ['any', ['==', ['get', 'kind'], 'block'], ['==', ['get', 'kind'], 'plaza']],
       paint: {
         'fill-color': blockTypeColor,
-        'fill-opacity': ['interpolate', ['linear'], ['zoom'], MAP_ZOOM.hexFadeStart, 0, MAP_ZOOM.hexFadeEnd, 1],
+        'fill-opacity': ['interpolate', ['linear'], ['zoom'], MAP_ZOOM.surfaceFadeStart, 0, MAP_ZOOM.surfaceFadeEnd, 1],
         'fill-outline-color': MAP_PALETTE.blockTypes.outline,
       },
     },
@@ -376,7 +330,7 @@ export function createMapStyle(baseUrl: string, datasets: MapDatasets, selectedI
       filter: ['==', ['get', 'kind'], 'town'],
       paint: {
         'fill-color': blockTypeColor,
-        'fill-opacity': ['interpolate', ['linear'], ['zoom'], MAP_ZOOM.hexFadeStart, 0, MAP_ZOOM.hexFadeEnd, 1],
+        'fill-opacity': ['interpolate', ['linear'], ['zoom'], MAP_ZOOM.surfaceFadeStart, 0, MAP_ZOOM.surfaceFadeEnd, 1],
         'fill-outline-color': MAP_PALETTE.blockTypes.outline,
       },
     },

@@ -99,18 +99,23 @@ const coast9To28 = coastManhattanPointToEast.slice(0, coastSplitIndex + 1);
 const coast28ToEast = coastManhattanPointToEast.slice(coastSplitIndex);
 const manhattanSouthEast = coast9ToManhattanPoint[coast9ToManhattanPoint.length - 1]!;
 
-const manhattanStGermain = curvedBoundary(west9 as GeometryXY, [9, 9], 0.22, 0.4);
-const stGermainBeverly = curvedBoundary([9, 9], [16, 9], 0.2, 2.1);
+const manhattanStGermain = curvedBoundary(west9 as GeometryXY, [9, 9], 0.22, 0.4, 6);
+const stGermainSouth = curvedBoundary([9, 9], [16, 9], 0.2, 2.1);
+const [stGermainCentral, stGermainBeverly] = splitPathAtX(stGermainSouth, 15);
+const centralNorthEast = stGermainCentral.at(-1)!;
+const centralCoastPoint = coast9To28.reduce((nearest, point) => Math.abs(point[0] - 15) < Math.abs(nearest[0] - 15) ? point : nearest);
+const centralCoastIndex = coast9To28.indexOf(centralCoastPoint);
+const centralBeverly = curvedBoundary(centralCoastPoint, centralNorthEast, 0.3, 0.7);
 const stGermainHarlem = curvedBoundary([16, 9], [16, 17], 0.18, 0.7);
 const stGermainUptown = curvedBoundary(west17 as GeometryXY, [16, 17], 0.22, 1.1);
 const uptownBrooklyn = curvedBoundary([16, 17], [16, 25], 0.18, 1.9);
 const uptownFleetPort = curvedBoundary(west25 as GeometryXY, [13, 25], 0.2, 2.5);
 const uptownReserve = curvedBoundary([13, 25], [16, 25], 0.14, 0.4);
 const brooklynReserve = curvedBoundary([16, 25], [28, 25], 0.2, 2.2);
-const fleetPortReserve = curvedBoundary([13, 25], [13, 34], 0.16, 0.5);
-const manhattanBeverly = curvedBoundary(manhattanSouthEast as GeometryXY, [9, 9], 0.16, 1.5);
-const fleetPortNorth = curvedBoundary([0.4, 34], [13, 34], 0.1, 2.6);
-const reserveNorth = curvedBoundary([13, 34], [36, 34], 0.1, 1.8);
+const fleetPortReserve = curvedBoundary([13, 25], [13, 34], 0.16, 0.5, 6);
+const manhattanBeverly = curvedBoundary(manhattanSouthEast as GeometryXY, [9, 9], 0.16, 1.5, 6);
+const fleetPortNorth = curvedBoundary([0.4, 34], [13, 34], 0.1, 2.6, 6);
+const reserveNorth = curvedBoundary([13, 34], [36, 34], 0.1, 1.8, 6);
 const northernBorder = stitchPaths(fleetPortNorth, reserveNorth);
 const reserveEastRaw = curvedBoundary(coast28ToEast[0]! as GeometryXY, [28, 25], 0.16, 1.6);
 const [eastCoastTo17, eastUpper] = splitPathAtY(reserveEastRaw, 17);
@@ -127,14 +132,17 @@ const manhattanRing = closeRing(stitchPaths(
   reversePath(coast9ToManhattanPoint),
 ));
 const beverlyRing = closeRing(stitchPaths(
-  coast9To28,
+  coast9To28.slice(centralCoastIndex),
   eastLower,
   reversePath(beverlyHarlem),
   reversePath(stGermainBeverly),
-  reversePath(manhattanBeverly),
+  reversePath(centralBeverly),
 ));
+const centralRing = closeRing(stitchPaths(coast9To28.slice(0, centralCoastIndex + 1), centralBeverly,
+  reversePath(stGermainCentral), reversePath(manhattanBeverly)));
 const stGermainRing = closeRing(stitchPaths(
   manhattanStGermain,
+  stGermainCentral,
   stGermainBeverly,
   stGermainHarlem,
   reversePath(stGermainUptown),
@@ -177,6 +185,7 @@ const reserveRing = closeRing(stitchPaths(
 
 export const districts: readonly DistrictDefinition[] = [
   { id: "manhattan", name: "曼哈顿区", kind: "urban", ring: manhattanRing },
+  { id: "central", name: "中央区", kind: "urban", ring: centralRing },
   { id: "beverly", name: "比弗利区", kind: "urban", ring: beverlyRing },
   { id: "st-germain", name: "圣日尔曼区", kind: "urban", ring: stGermainRing },
   { id: "harlem", name: "哈林区", kind: "urban", ring: harlemRing },
@@ -193,12 +202,12 @@ const monacoRing = closeRing(stitchPaths(
 ));
 const ottomanRing = closeRing(stitchPaths(
   northernBorder,
-  [[36, 34], [36, 43], [22, 44], [2, 43], [-2, 41], [-2, 37]],
+  [[36, 34], [80, 34], [80, 90], [-30, 90], [-30, 43], [-2, 37]],
   reversePath(ottomanWestCoast),
 ));
 const eastRegionRing = closeRing(stitchPaths(
   eastRegionSouthCoast,
-  [[47, 1], [47, 34], [36, 34]],
+  [[47, 1], [80, 1], [80, 34], [36, 34]],
   [[36, 34], [36, 0.2]],
 ));
 
@@ -254,7 +263,8 @@ export const points: readonly PointDefinition[] = [
   { id: "battery-park", name: "炮台公园", category: "公园", district: "曼哈顿区", position: [-1.25, -1.05] },
   { id: "promenade", name: "海滨长廊", category: "地点", district: "曼哈顿区", position: [2.1, coastYAtX(2.1) + 0.025] },
   { id: "star-ferry", name: "天星码头", category: "码头", district: "曼哈顿区", position: [8.1, coastYAtX(8.1) + 0.005] },
-  { id: "old-governors-house", name: "旧总督府", category: "古迹", district: "比弗利区", position: [10.8, 4.6] },
+  { id: "old-governors-house", name: "旧总督府", category: "古迹", district: "比弗利区", position: [16.7, 4.5] },
+  { id: "airport", name: "机场", category: "交通", district: "哈林区", position: [25.5, 12.5] },
   { id: "church", name: "教堂", category: "古迹", district: "曼哈顿区", position: [2.35, 0.45] },
   { id: "republic-monument", name: "共和纪念碑", category: "古迹", district: "上城区", position: [7.1, 19.9] },
   { id: "city-hall", name: "市政府", category: "地标", district: "上城区", position: [7.1, 20.4] },
@@ -273,8 +283,8 @@ export const stations: readonly StationDefinition[] = [
   { id: "station-hospital", name: "大医院", district: "上城区", position: [10.55, 22.1] },
   { id: "station-continental-tower", name: "大陆集团大厦", district: "曼哈顿区", position: [4.627522, 1.762421] },
   { id: "station-exchange-square", name: "交易广场", district: "曼哈顿区", position: [7.425816, 1.860139] },
-  { id: "station-beverly", name: "比弗利", district: "比弗利区", position: [18.5, 2.2] },
-  { id: "station-beverly-east", name: "比弗利东", district: "比弗利区", position: [26.5, 2.2] },
+  { id: "station-beverly", name: "比弗利", district: "比弗利区", position: [18.5, 2.75] },
+  { id: "station-beverly-east", name: "比弗利东", district: "比弗利区", position: [26.5, 2.75] },
   { id: "station-harlem", name: "哈林", district: "哈林区", position: [22, 13] },
   { id: "station-brooklyn", name: "布鲁克林", district: "布鲁克林区", position: [22, 21] },
   { id: "station-reserve-south", name: "保留地南", district: "保留地", position: [22, 25.3] },
@@ -304,8 +314,8 @@ export const transitLines: readonly TransitLineDefinition[] = [
       "station-continental-tower>station-exchange-square": [
         [4.627522, 1.762421], [5.4, 1.79], [6.4, 1.82], [7.425816, 1.860139],
       ],
-      "station-exchange-square>station-beverly": [[7.425816, 1.860139], [9, 2.35], [18.5, 2.2]],
-      "station-beverly>station-beverly-east": [[18.5, 2.2], [22, 2.2], [26.5, 2.2]],
+      "station-exchange-square>station-beverly": [[7.425816, 1.860139], [11, 3.1], [15.3, 2.9], [18.5, 2.75]],
+      "station-beverly>station-beverly-east": [[18.5, 2.75], [22, 2.75], [26.5, 2.75]],
     },
   },
   {
@@ -342,7 +352,7 @@ export const roads: readonly RoadDefinition[] = [
   { id: "battery-park-access", name: "", roadClass: "local", width: 0.016, coordinates: [[-0.8, -1.25], [-0.8, -1.75]] },
   { id: "A1", name: "A1", roadClass: "motorway", width: 0.05, coordinates: [[3.2, 3.4555], [4, 8], [4, 13], [8, 19], [8, 21], [11, 25], [13, 28], [13, 36]] },
   { id: "A2", name: "A2", roadClass: "motorway", width: 0.05, coordinates: [[7.7, 3.465], [9, 2.35], [18.5, 2.2], [26.5, 2.2], [28, 2.2], [31, 3], [36, 3.7], [41, 4]] },
-  { id: "A3", name: "A3", roadClass: "motorway", width: 0.05, coordinates: [[8, 21], [16, 21], [20, 19], [22, 17], [24, 14], [26.5, 11], [28, 9], [29.5, 6], [31, 3], [36, 4], [41, 4]] },
+  { id: "A3", name: "A3", roadClass: "motorway", width: 0.05, coordinates: [[8, 21], [16, 21], [22, 18], [27.8, 16], [29.5, 13], [30, 9], [31, 3], [36, 4], [41, 4]] },
   { id: "fifth-avenue", name: "第五大道", roadClass: "arterial", width: 0.024, coordinates: [[5.908, 3.45], [5.908, 9.2]] },
   { id: "broadway", name: "百老汇大道", roadClass: "arterial", width: 0.034, coordinates: [[2.8, 1.6], [3.7, 2.5], [4.5, 3.35], [5.908, 5.013], [7.2, 6.35], [8.5, 7.7], [9.15, 8.35]] },
   { id: "queens-road", name: "皇后大道", roadClass: "arterial", width: 0.034, coordinates: [[-0.25, 3.45], [1.5, 3.43], [3.5, 3.46], [5.5, 3.5], [7.7, 3.465], [9.25, 3.45]] },
@@ -355,7 +365,7 @@ export const roads: readonly RoadDefinition[] = [
 ];
 
 export const regionalDistrictBounds = {
-  "beverly": [9, 0, 28, 9],
+  "beverly": [15, 0, 28, 9],
   "st-germain": [0, 9, 16, 17],
   "harlem": [16, 9, 28, 17],
   "uptown": [0, 17, 16, 25],
@@ -387,8 +397,6 @@ export const reserveTownCenters: readonly { id: string; position: XY }[] = [
 ];
 
 export const beverlyHills = [
-  { center: [11.3, 5.7] as XY, peak: 250, sigmaX: 2.15, sigmaY: 2.05 },
-  { center: [13.9, 6.4] as XY, peak: 270, sigmaX: 2.25, sigmaY: 2.15 },
   { center: [16.5, 5.9] as XY, peak: 290, sigmaX: 2.3, sigmaY: 2.15 },
   { center: [19.1, 6.5] as XY, peak: 300, sigmaX: 2.4, sigmaY: 2.15 },
   { center: [21.7, 5.8] as XY, peak: 285, sigmaX: 2.3, sigmaY: 2.15 },
@@ -407,7 +415,9 @@ export const metropolitanBounds = {
 
 export const internalBoundaries = [
   { id: "manhattan-st-germain", coordinates: manhattanStGermain },
-  { id: "manhattan-beverly", coordinates: manhattanBeverly },
+  { id: "manhattan-central", coordinates: manhattanBeverly },
+  { id: "st-germain-central", coordinates: stGermainCentral },
+  { id: "central-beverly", coordinates: centralBeverly },
   { id: "st-germain-beverly", coordinates: stGermainBeverly },
   { id: "beverly-harlem", coordinates: beverlyHarlem },
   { id: "st-germain-harlem", coordinates: stGermainHarlem },

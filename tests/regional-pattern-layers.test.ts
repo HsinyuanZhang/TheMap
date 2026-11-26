@@ -7,12 +7,12 @@ import { deferRegionalPatternLayers, registerRegionalPatternsBeforeLayers } from
 
 test('regional Canvas images are installed before their layers on initial load and retries', () => {
   const sourceStyle = createMapStyle('/', emptyMapDatasets());
-  const textureIndex = sourceStyle.layers.findIndex((layer) => layer.id === 'superblock-texture');
+  const textureIndex = sourceStyle.layers.findIndex((layer) => layer.id === 'farm-furrows');
   const expectedBefore = sourceStyle.layers[textureIndex + 1]?.id;
   const deferred = deferRegionalPatternLayers(sourceStyle);
   assert.ok(textureIndex >= 0);
-  assert.ok(!deferred.style.layers.some((layer) => layer.id === 'superblock-texture'));
-  for (const id of ['wood-canopy', 'wood-clumps', 'farm-furrows']) {
+  assert.ok(!deferred.style.layers.some((layer) => layer.id === 'farm-furrows'));
+  for (const id of ['wood-canopy', 'farm-furrows']) {
     assert.ok(deferred.layers.some(({ layer }) => layer.id === id));
     assert.ok(!deferred.style.layers.some((layer) => layer.id === id));
   }
@@ -36,7 +36,7 @@ test('regional Canvas images are installed before their layers on initial load a
   const imageFactory = () => ({ width: 1, height: 1, data: new Uint8ClampedArray(4) }) as ImageData;
   const install = (): void => {
     assert.equal(registerRegionalPatternsBeforeLayers(map, deferred.layers, imageFactory), true);
-    const layerEvent = events.indexOf('layer:superblock-texture');
+    const layerEvent = events.indexOf('layer:farm-furrows');
     assert.ok(layerEvent >= 0);
     for (const id of regionalPatternIds) assert.ok(events.indexOf(`image:${id}`) < events.findIndex((event) => event.startsWith('layer:')));
     assert.equal(beforeIds.at(-1), expectedBefore);
@@ -44,17 +44,17 @@ test('regional Canvas images are installed before their layers on initial load a
 
   install();
   assert.equal(registerRegionalPatternsBeforeLayers(map, deferred.layers, imageFactory), true);
-  assert.equal(events.filter((event) => event === 'layer:superblock-texture').length, 1);
+  assert.equal(events.filter((event) => event === 'layer:farm-furrows').length, 1);
   images.clear();
-  layers.delete('superblock-texture');
+  layers.delete('farm-furrows');
   events.length = 0;
   beforeIds.length = 0;
   install();
 
   images.clear();
-  layers.delete('superblock-texture');
+  layers.delete('farm-furrows');
   events.length = 0;
   assert.equal(registerRegionalPatternsBeforeLayers(map, deferred.layers, () => undefined), false);
-  assert.ok(!layers.has('superblock-texture'));
+  assert.ok(!layers.has('farm-furrows'));
   assert.deepEqual(events, []);
 });

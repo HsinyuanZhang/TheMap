@@ -10,5 +10,5 @@ export const MAP_ZOOM = {
   farms: 11, texture: 11.5, extrusion: MAP_LOD.near.min, contours: 12.5,
   districtLabelEnd: 13, flat: 13.2, detailLabels: 13.5, flatFull: 13.7,
   duplicateLabels: MAP_LOD.close.min,
-  hexFadeStart: 11, hexFadeEnd: MAP_LOD.near.min, fadeSpan: 0.5,
+  surfaceFadeStart: 11, surfaceFadeEnd: MAP_LOD.near.min, fadeSpan: 0.5,
 } as const;

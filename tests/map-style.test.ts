@@ -3,7 +3,6 @@ import { test } from 'node:test';
 import { validateStyleMin } from '@maplibre/maplibre-gl-style-spec';
 import { emptyMapDatasets } from '../src/dataset-loader';
 import { MAP_LEGEND_ITEMS, MAP_PALETTE, blockTypeColorExpression, buildingColorExpression, createMapStyle, createPointAnnotations } from '../src/map-style';
-import { regionalBlockPatternIds } from '../src/block-patterns';
 
 function layerFilter(layer: ReturnType<typeof createMapStyle>['layers'][number] | undefined): unknown {
   return layer && 'filter' in layer ? layer.filter : undefined;
@@ -45,7 +44,7 @@ test('style includes local sky, light, generated borders, and all dataset source
     'fog-ground-blend': 0.55,
     'atmosphere-blend': 0,
   });
-  for (const name of ['land', 'districts', 'parks', 'roads', 'metro_lines', 'metro_stations', 'buildings', 'pois', 'blocks', 'boundaries', 'labels', 'trees', 'surface', 'terrain', 'overview']) {
+  for (const name of ['land', 'districts', 'parks', 'roads', 'metro_lines', 'metro_stations', 'buildings', 'pois', 'blocks', 'boundaries', 'labels', 'trees', 'surface', 'terrain']) {
     assert.equal(style.sources[name]?.type, 'geojson', name);
   }
   const layers = style.layers.map((layer) => layer.id);
@@ -54,7 +53,7 @@ test('style includes local sky, light, generated borders, and all dataset source
   assert.ok(layers.includes('north-border'));
   assert.equal(layers.includes('streets'), false);
   assert.ok(layers.includes('terrain-bands'));
-  assert.ok(layers.includes('overview-woods'));
+  assert.ok(layers.includes('woods-fill'));
   assert.ok(layers.includes('terrain-contours'));
   assert.ok(layers.indexOf('road-labels') < layers.indexOf('park-labels'));
   assert.ok(layers.indexOf('park-labels') < layers.indexOf('other-place-labels'));
@@ -66,7 +65,7 @@ test('style includes local sky, light, generated borders, and all dataset source
   const terrainContours = style.layers.find((layer) => layer.id === 'terrain-contours');
   const terrainContourLabels = style.layers.find((layer) => layer.id === 'terrain-contour-labels');
   const farms = style.layers.find((layer) => layer.id === 'farms');
-  const woods = style.layers.find((layer) => layer.id === 'overview-woods');
+  const woods = style.layers.find((layer) => layer.id === 'woods-fill');
   assert.equal(districtLabels && districtLabels.type !== 'background' ? districtLabels.source : undefined, 'labels');
   assert.equal(northBorder && northBorder.type !== 'background' ? northBorder.source : undefined, 'boundaries');
   assert.deepEqual(layerFilter(terrainBands), ['==', ['get', 'kind'], 'band']);
@@ -85,16 +84,15 @@ test('rendering layers use the requested LOD and building-height expressions', (
   const style = createMapStyle('/', emptyMapDatasets());
   const byId = new Map(style.layers.map((layer) => [layer.id, layer]));
   assert.equal(byId.get('highways')?.minzoom, 7.2);
-  assert.equal(byId.get('overview-woods')?.minzoom, 8.5);
+  assert.equal(byId.get('woods-fill')?.minzoom, 8.5);
   assert.equal(byId.get('farms')?.minzoom, 11);
   const bands = byId.get('terrain-bands');
   assert.ok(bands?.type === 'fill');
-  assert.equal(bands.source, 'overview');
+  assert.equal(bands.source, 'terrain');
   assert.equal(byId.get('terrain-bands')?.minzoom, 10);
   assert.equal(byId.get('terrain-contours')?.minzoom, 12.5);
   assert.equal(byId.get('parks-fill')?.minzoom, 9.5);
   assert.equal(byId.get('blocks-fill')?.minzoom, 10);
-  assert.equal(byId.get('superblocks')?.minzoom, 10);
   assert.equal(byId.get('town-blocks-fill')?.minzoom, 10);
   assert.equal(byId.get('rural-roads')?.minzoom, 11);
   assert.equal(byId.get('buildings-3d')?.minzoom, 12);
@@ -138,9 +136,6 @@ test('rendering layers use the requested LOD and building-height expressions', (
   assert.ok(blockFill?.type === 'fill');
   assert.deepEqual(blockFill.paint?.['fill-color'], blockTypeColorExpression());
   assert.equal(blockFill.paint?.['fill-outline-color'], '#bfb49d');
-  const superblocks = byId.get('superblocks');
-  assert.ok(superblocks?.type === 'fill');
-  assert.deepEqual(superblocks.paint?.['fill-color'], blockTypeColorExpression());
   const townBlocks = byId.get('town-blocks-fill');
   assert.ok(townBlocks?.type === 'fill');
   assert.deepEqual(townBlocks.paint?.['fill-color'], blockTypeColorExpression());
@@ -203,17 +198,6 @@ test('block and building palettes match the legend and distinguish named landmar
   assert.deepEqual(selected[3], buildingColorExpression(undefined));
 });
 
-test('regional superblock texture uses generated canvas pattern images at the specified LOD', () => {
-  const style = createMapStyle('/', emptyMapDatasets());
-  const texture = style.layers.find((layer) => layer.id === 'superblock-texture');
-  assert.ok(texture?.type === 'fill');
-  assert.equal(texture.minzoom, 11.5);
-  assert.deepEqual(texture.filter, ['all', ['==', ['get', 'kind'], 'superblock'],
-    ['in', ['get', 'type'], ['literal', ['lowrise', 'midrise']]]]);
-  assert.deepEqual(texture.paint?.['fill-pattern'], ['match', ['get', 'type'],
-    'midrise', 'regional-midrise-pattern', 'regional-lowrise-pattern']);
-  assert.deepEqual([...regionalBlockPatternIds].sort(), ['regional-lowrise-pattern', 'regional-midrise-pattern']);
-});
 
 test('park labels use one existing point annotation per park, not polygon placement', () => {
   const datasets = emptyMapDatasets();
@@ -253,15 +237,13 @@ test('park labels use one existing point annotation per park, not polygon placem
   assert.ok(parkPoints.every((feature) => feature.geometry.type === 'Point'));
 });
 
-test('LOD appearances fade from zero, with blocks cross-fading from the hex atlas', () => {
+test('LOD appearances fade from zero, with real geometry fading in', () => {
   const style = createMapStyle('/', emptyMapDatasets());
   const byId = new Map(style.layers.map((layer) => [layer.id, layer]));
   const fades: Array<[string, string, number, number, number?]> = [
     ['farms', 'fill-opacity', 11, 0.9],
     ['town-blocks-fill', 'fill-opacity', 11, 1, 1],
     ['rural-roads', 'line-opacity', 11, 0.82],
-    ['superblocks', 'fill-opacity', 11, 1, 1],
-    ['superblock-texture', 'fill-opacity', 11.5, 0.32],
     ['parks-fill', 'fill-opacity', 9.5, 0.96],
     ['lake-fill', 'fill-opacity', 9.5, 0.95],
     ['parks-outline', 'line-opacity', 9.5, 1],

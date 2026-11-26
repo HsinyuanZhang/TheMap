@@ -30,6 +30,8 @@
     "city-hall": { "name": "市政府", "type": "地标", "district": "上城区", "body": "摩纳哥市政府所在地。市长由居民选举产生，没有德国国籍的摩纳哥公民同样有投票权。" },
     "hospital": { "name": "大医院", "type": "地标", "district": "上城区", "body": "上城区的大医院。" },
     "library": { "name": "图书馆", "type": "地标", "district": "上城区", "body": "上城区的图书馆。" },
-    "north-checkpoint": { "name": "北部口岸", "type": "口岸", "district": "北部边境", "body": "通往奥斯曼的边境口岸。边境管控严格，由联邦警察负责，走私时有发生。" }
+    "north-checkpoint": { "name": "北部口岸", "type": "口岸", "district": "北部边境", "body": "通往奥斯曼的边境口岸。边境管控严格，由联邦警察负责，走私时有发生。" },
+    "central": { "name": "中央区", "type": "城区", "district": "—", "body": "位于曼哈顿区、圣日尔曼区和比弗利区之间的城区。" },
+    "airport": { "name": "机场", "type": "交通", "district": "哈林区", "body": "位于哈林区东部的机场。" }
   }
 }
