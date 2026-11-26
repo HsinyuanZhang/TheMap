@@ -14,3 +14,12 @@ test('native legend starts collapsed and stays below the scrollable mobile layer
   assert.match(mobileStyles, /\.map-legend\s*\{[^}]*\+ 117px\)[^}]*max-height:/s);
   assert.match(css, /\.legend-swatch-dashed::after[^}]*repeating-linear-gradient/);
 });
+
+test('mobile scale moves to the right while preserving panel clearance and desktop placement', async () => {
+  const css = await readFile(new URL('../src/style.css', import.meta.url), 'utf8');
+  const breakpoint = css.indexOf('@media (max-width: 640px)');
+  const desktopStyles = css.slice(0, breakpoint);
+  const mobileStyles = css.slice(breakpoint);
+  assert.match(desktopStyles, /\.maplibregl-ctrl-bottom-left\s*\{\s*margin: 0 0 14px 14px;\s*\}/);
+  assert.match(mobileStyles, /\.maplibregl-ctrl-bottom-left\s*\{[^}]*left:\s*auto;[^}]*right:\s*0;[^}]*bottom:\s*var\(--mobile-scale-offset, 0px\);/);
+});

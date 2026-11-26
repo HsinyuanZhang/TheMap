@@ -335,7 +335,7 @@ button { color: inherit; }
   .station-meta { margin: 10px 17px 0; padding: 8px 10px; }
   .panel-body { padding: 13px 17px 18px; font-size: 13px; line-height: 1.75; }
   .share-area { padding: 0 17px 12px; }
-  .maplibregl-ctrl-bottom-left { bottom: var(--mobile-scale-offset, 0px); margin-bottom: 12px; margin-left: 10px; }
+  .maplibregl-ctrl-bottom-left { left: auto; right: 0; bottom: var(--mobile-scale-offset, 0px); margin-bottom: 12px; margin-left: 0; margin-right: 10px; }
   .map-data-notice { top: calc(max(10px, env(safe-area-inset-top)) + 112px); }
   .map-error { top: calc(max(10px, env(safe-area-inset-top)) + 112px); }
 }
