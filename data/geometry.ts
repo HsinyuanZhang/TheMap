@@ -43,6 +43,23 @@ export function curvedBoundary(start: XY, end: XY, amplitude: number, phase: num
   });
 }
 
+export function windingBoundary(start: XY, end: XY, amplitude: number, phase: number, reference?: readonly XY[]): XY[] {
+  const dx = end[0] - start[0], dy = end[1] - start[1], length = Math.hypot(dx, dy);
+  if (!length || !Number.isFinite(amplitude) || !Number.isFinite(phase)) throw new Error('A boundary needs distinct endpoints and finite offsets.');
+  if (reference && (reference.length < 2 || !samePoint(reference[0]!, start) || !samePoint(reference.at(-1)!, end))) throw new Error('Reference boundary endpoints must match.');
+  const count = Math.max(32, Math.ceil(length / 0.12));
+  const weights = Array.from({ length: count }, (_, i) => Math.sin(Math.PI * i / (count - 1)));
+  const offsets = weights.map((w, i) => w * Math.sin(4 * Math.PI * i / (count - 1) + phase));
+  const weight = weights.reduce((sum, v) => sum + v, 0);
+  const mean = offsets.reduce((sum, v) => sum + v, 0) / weight;
+  const referenceArea = reference ? reference.slice(1).reduce((sum, b, i) => sum + reference[i]![0] * b[1] - reference[i]![1] * b[0], 0) - (start[0] * end[1] - start[1] * end[0]) : 0;
+  const bias = -referenceArea * (count - 1) / (2 * length * weight);
+  return offsets.map((v, i) => {
+    const t = i / (count - 1), offset = amplitude * (v - weights[i]! * mean) + weights[i]! * bias;
+    return i === 0 ? start : i === count - 1 ? end : [start[0] + dx * t - dy / length * offset, start[1] + dy * t + dx / length * offset];
+  });
+}
+
 export function chaikinOpen(path: readonly XY[], iterations: number): XY[] {
   if (path.length < 2) throw new Error("An open coastline needs at least two points.");
   let result = [...path];

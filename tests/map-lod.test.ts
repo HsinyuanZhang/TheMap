@@ -5,14 +5,14 @@ import { MAP_LIGHT, shadowOffset } from '../src/map-light';
 import { MAP_LOD, MAP_ZOOM } from '../src/map-lod';
 import { createMapStyle } from '../src/map-style';
 
-test('four contiguous LOD tiers preserve required thresholds', () => {
+test('four contiguous LOD tiers use the Phase 4 vector thresholds', () => {
   const tiers = Object.values(MAP_LOD);
   assert.equal(tiers.length, 4);
   for (let index = 1; index < tiers.length; index += 1) assert.equal(tiers[index - 1]!.max, tiers[index]!.min);
   assert.equal(MAP_ZOOM.woods, 8.5);
-  assert.equal(MAP_ZOOM.contours, 12.5);
-  assert.equal(MAP_ZOOM.flat, 13.2);
-  assert.equal(MAP_ZOOM.flatFull, 13.7);
+  assert.equal(MAP_ZOOM.contours, 13);
+  assert.equal(MAP_ZOOM.flat, 13.5);
+  assert.equal(MAP_ZOOM.flatFull, 13.8);
   const style = createMapStyle('/', emptyMapDatasets());
   const layers = new Map(style.layers.map((layer) => [layer.id, layer]));
   const blocks = layers.get('blocks-fill');

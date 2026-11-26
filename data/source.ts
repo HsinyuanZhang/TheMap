@@ -2,6 +2,7 @@ import {
   chaikinOpen,
   closeRing,
   curvedBoundary,
+  windingBoundary,
   reversePath,
   splitPathAtX,
   splitPathAtY,
@@ -100,29 +101,29 @@ const coast28ToEast = coastManhattanPointToEast.slice(coastSplitIndex);
 const manhattanSouthEast = coast9ToManhattanPoint[coast9ToManhattanPoint.length - 1]!;
 
 const manhattanStGermain = curvedBoundary(west9 as GeometryXY, [9, 9], 0.22, 0.4, 6);
-const stGermainSouth = curvedBoundary([9, 9], [16, 9], 0.2, 2.1);
+const stGermainSouth = windingBoundary([9, 9], [16, 9], 0.65, 2.1);
 const [stGermainCentral, stGermainBeverly] = splitPathAtX(stGermainSouth, 15);
 const centralNorthEast = stGermainCentral.at(-1)!;
 const centralCoastPoint = coast9To28.reduce((nearest, point) => Math.abs(point[0] - 15) < Math.abs(nearest[0] - 15) ? point : nearest);
 const centralCoastIndex = coast9To28.indexOf(centralCoastPoint);
-const centralBeverly = curvedBoundary(centralCoastPoint, centralNorthEast, 0.3, 0.7);
-const stGermainHarlem = curvedBoundary([16, 9], [16, 17], 0.18, 0.7);
-const stGermainUptown = curvedBoundary(west17 as GeometryXY, [16, 17], 0.22, 1.1);
-const uptownBrooklyn = curvedBoundary([16, 17], [16, 25], 0.18, 1.9);
-const uptownFleetPort = curvedBoundary(west25 as GeometryXY, [13, 25], 0.2, 2.5);
-const uptownReserve = curvedBoundary([13, 25], [16, 25], 0.14, 0.4);
-const brooklynReserve = curvedBoundary([16, 25], [28, 25], 0.2, 2.2);
-const fleetPortReserve = curvedBoundary([13, 25], [13, 34], 0.16, 0.5, 6);
+const centralBeverly = windingBoundary(centralCoastPoint, centralNorthEast, 0.7, 0.7);
+const stGermainHarlem = windingBoundary([16, 9], [16, 17], 0.65, 0.7);
+const stGermainUptown = windingBoundary(west17 as GeometryXY, [16, 17], 0.75, 1.1);
+const uptownBrooklyn = windingBoundary([16, 17], [16, 25], 0.65, 1.9);
+const uptownFleetPort = windingBoundary(west25 as GeometryXY, [13, 25], 0.65, 2.5, curvedBoundary(west25 as GeometryXY, [13, 25], 0.2, 2.5));
+const uptownReserve = windingBoundary([13, 25], [16, 25], 0.25, 0.4);
+const brooklynReserve = windingBoundary([16, 25], [28, 25], 0.7, -2.2);
+const fleetPortReserve = windingBoundary([13, 25], [13, 34], 0.65, 0.5, curvedBoundary([13, 25], [13, 34], 0.16, 0.5, 6));
 const manhattanBeverly = curvedBoundary(manhattanSouthEast as GeometryXY, [9, 9], 0.16, 1.5, 6);
 const fleetPortNorth = curvedBoundary([0.4, 34], [13, 34], 0.1, 2.6, 6);
 const reserveNorth = curvedBoundary([13, 34], [36, 34], 0.1, 1.8, 6);
 const northernBorder = stitchPaths(fleetPortNorth, reserveNorth);
-const reserveEastRaw = curvedBoundary(coast28ToEast[0]! as GeometryXY, [28, 25], 0.16, 1.6);
+const reserveEastRaw = windingBoundary(coast28ToEast[0]! as GeometryXY, [28, 25], 0.45, -Math.PI / 2);
 const [eastCoastTo17, eastUpper] = splitPathAtY(reserveEastRaw, 17);
 const [eastLower, eastMiddle] = splitPathAtY(eastCoastTo17, 9);
 const reserveEastBoundary = stitchPaths(eastLower, eastMiddle, eastUpper);
-const beverlyHarlem = curvedBoundary([16, 9], eastLower.at(-1)! as GeometryXY, 0.18, 0.9);
-const harlemBrooklyn = curvedBoundary([16, 17], eastMiddle.at(-1)! as GeometryXY, 0.22, 0.9);
+const beverlyHarlem = windingBoundary([16, 9], eastLower.at(-1)! as GeometryXY, 0.4, 0.9);
+const harlemBrooklyn = windingBoundary([16, 17], eastMiddle.at(-1)! as GeometryXY, 0.75, 0.9);
 const ottomanWestCoast = chaikinOpen([[0.4, 34], [-0.5, 35.1], [-1.4, 36.2], [-2, 37]], 3);
 const eastRegionSouthCoast = chaikinOpen([[36, 0.2], [39, 0.05], [42, -0.4], [45, -0.5], [47, 1]], 3);
 

@@ -109,7 +109,7 @@ export function paintPixels(world: WorldModel, view: PaintView, bleed: number = 
       if (sample.surface === 'lowdensity') color = blend([199, 190, 169], color, 0.2 + 0.8 * smooth(world.urbanEdgeDistance(x, y) / 0.65));
       if (['lowrise', 'midrise', 'highrise', 'town'].includes(sample.surface)) {
         const cell = world.streetAt(x, y, sample.angle, sample.quarter), tone = (sample.quarter - 0.5) * 15;
-        color = [199 + tone, 190 + tone * 0.8, 169 + tone * 0.6];
+        color = [213 + tone, 192 + tone * 0.8, 177 + tone * 0.6];
         const roofs = [[172, 144, 119], [167, 160, 143], [188, 163, 130], [142, 153, 147], [175, 132, 112]];
         const roof = roofs[Math.floor(worldHash(cell.col, cell.row, Math.floor(sample.quarter * 10000)) * roofs.length)];
         color = blend(color, roof, detail * 0.48);

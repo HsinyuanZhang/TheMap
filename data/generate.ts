@@ -1058,6 +1058,7 @@ function generateWoods(towns: readonly TownArea[], preserveLandRandomSequence = 
     const patch = forestEllipse(patchPlan.center, patchPlan.rx, patchPlan.ry, patchPlan.phase, woodlandRand, patchPlan.angle);
     for (const clipRing of beverlyForestBoundary) for (const clipped of intersectWithRing([patch], clipRing)) {
       for (const piece of polygonPieces(localPolygonWithHoles(clipped).geometry)) {
+        if (planarArea(piece) < 0.3) continue;
         if (rings.some((ring) => !disjoint(piece[0]!, ring))) throw new Error("Beverly woods must not overlap.");
         const localPolygon = feature(localPolygonWithHoles(piece).geometry, { kind: "wood", sector: "beverly" });
         woods.push(feature(polygonGeometry(piece), localPolygon.properties));
@@ -1779,9 +1780,14 @@ function generateFarmAndPortSurfaces(
       const depth = Math.max(...ys) - Math.min(...ys);
       const area = planarArea(polygon);
       if (width < 0.15 || depth < 0.15 || width > 0.6 || depth > 0.6 || area < 0.008) continue;
+      const geometry = polygonGeometry(polygon);
+      const rounded = geometry.coordinates[0]!.map(localFromCoordinate);
+      const roundedWidth = Math.max(...rounded.map(p => p[0])) - Math.min(...rounded.map(p => p[0]));
+      const roundedDepth = Math.max(...rounded.map(p => p[1])) - Math.min(...rounded.map(p => p[1]));
+      if (roundedWidth < 0.15 || roundedDepth < 0.15 || roundedWidth > 0.6 || roundedDepth > 0.6) continue;
       if (farmArea + area > reserveArea * 0.53) continue;
       const tone = Math.abs(Math.floor((center[0] * 17 + center[1] * 23) * 10)) % 4;
-      surfaces.push(feature(polygonGeometry(polygon), { kind: "farm", tone }));
+      surfaces.push(feature(geometry, { kind: "farm", tone }));
       farmArea += area;
       farmCount += 1;
       if (farmArea >= reserveArea * 0.5 || farmCount >= 2000) break;

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { emptyMapDatasets } from '../src/dataset-loader';
 import { createMapStyle } from '../src/map-style';
+import { labelImageIds } from '../src/map-label-images';
 import { regionalPatternIds } from '../src/block-patterns';
 import { deferRegionalPatternLayers, registerRegionalPatternsBeforeLayers } from '../src/regional-pattern-layers';
 
@@ -20,10 +21,11 @@ test('regional Canvas images are installed before their layers on initial load a
     assert.ok(!deferred.style.layers.some((layer) => layer.id === id));
   }
 
+  for (const id of ['overview-place-labels', 'highway-shields', 'metro-badges']) assert.ok(!deferred.style.layers.some(layer => layer.id === id));
   const images = new Set<string>();
   const layers = new Set(deferred.style.layers.map((layer) => layer.id));
   const events: string[] = [];
-  const beforeIds: Array<string | undefined> = [];
+  const beforeIds: Array<{ id: string; beforeId?: string }> = [];
   const map = {
     hasImage: (id: string) => images.has(id),
     addImage: (id: string) => { events.push(`image:${id}`); images.add(id); },
@@ -32,7 +34,7 @@ test('regional Canvas images are installed before their layers on initial load a
       assert.ok(!beforeId || layers.has(beforeId));
       assert.ok(regionalPatternIds.every((id) => images.has(id)));
       events.push(`layer:${layer.id}`);
-      beforeIds.push(beforeId);
+      beforeIds.push({ id: layer.id, beforeId });
       layers.add(layer.id);
     },
   } as unknown as Parameters<typeof registerRegionalPatternsBeforeLayers>[0];
@@ -41,8 +43,8 @@ test('regional Canvas images are installed before their layers on initial load a
     assert.equal(registerRegionalPatternsBeforeLayers(map, deferred.layers, imageFactory), true);
     const layerEvent = events.indexOf('layer:farm-furrows');
     assert.ok(layerEvent >= 0);
-    for (const id of regionalPatternIds) assert.ok(events.indexOf(`image:${id}`) < events.findIndex((event) => event.startsWith('layer:')));
-    assert.equal(beforeIds.at(-1), expectedBefore);
+    for (const id of [...regionalPatternIds, ...labelImageIds]) assert.ok(events.indexOf(`image:${id}`) < events.findIndex((event) => event.startsWith('layer:')));
+    assert.equal(beforeIds.find(item => item.id === 'farm-furrows')?.beforeId, expectedBefore);
   };
 
   install();

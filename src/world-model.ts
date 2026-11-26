@@ -235,7 +235,7 @@ export class WorldModel {
     if (['midrise', 'lowrise'].includes(surface) && district !== 'manhattan') {
       const u = (x * Math.cos(q.angle) + y * Math.sin(q.angle)) / 0.23;
       const v = (-x * Math.sin(q.angle) + y * Math.cos(q.angle)) / 0.18;
-      if ((q.edge < 0.065 && noise(x * 2, y * 2) > 0.53) || worldHash(Math.floor(u), Math.floor(v), Math.floor(q.id * 1000)) < 0.06 && u - Math.floor(u) > 0.12 && v - Math.floor(v) > 0.12) surface = 'park';
+      if (worldHash(Math.floor(u), Math.floor(v), Math.floor(q.id * 1000)) < 0.08 && Math.hypot((u - Math.floor(u) - 0.5) / 0.43, (v - Math.floor(v) - 0.5) / 0.4) < 1) surface = 'park';
     }
     return { district, surface, elevation, angle: q.angle, quarter: q.id, quarterEdge: q.edge,
       tone: field.tone, field: field.id, fieldEdge: field.edge,

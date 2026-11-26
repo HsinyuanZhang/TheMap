@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { validateStyleMin } from '@maplibre/maplibre-gl-style-spec';
+import { OVERVIEW_PLACES } from '../src/map-overlays';
 import { emptyMapDatasets } from '../src/dataset-loader';
 import { MAP_LEGEND_ITEMS, MAP_PALETTE, blockTypeColorExpression, buildingColorExpression, createMapStyle, createPointAnnotations } from '../src/map-style';
 
@@ -88,12 +89,12 @@ test('rendering layers use the requested LOD and building-height expressions', (
   assert.equal(byId.get('blocks-fill')?.minzoom, 13.5);
   assert.equal(byId.get('rural-roads')?.minzoom, 11);
   assert.equal(byId.get('buildings-3d')?.minzoom, 12);
-  assert.equal(byId.get('buildings-flat')?.minzoom, 13.2);
+  assert.equal(byId.get('buildings-flat')?.minzoom, 13.5);
   assert.equal(byId.get('buildings-flat')?.maxzoom, undefined);
   assert.equal(byId.get('trees-3d')?.minzoom, 13.5);
   assert.equal(byId.get('district-labels')?.maxzoom, 13);
-  assert.equal(byId.get('park-labels')?.minzoom, 9.5);
-  assert.equal(byId.get('landmark-labels')?.minzoom, 9.5);
+  assert.equal(byId.get('park-labels')?.minzoom, 11);
+  assert.equal(byId.get('landmark-labels')?.minzoom, 11);
   assert.equal(byId.get('station-labels')?.minzoom, 11.5);
   assert.equal(byId.get('other-place-labels')?.minzoom, 12.5);
   const candidate = byId.get('buildings-3d');
@@ -107,23 +108,25 @@ test('rendering layers use the requested LOD and building-height expressions', (
   assert.equal(buildings?.paint?.['fill-extrusion-vertical-gradient'], true);
   const flat = byId.get('buildings-flat');
   assert.equal(flat?.type, 'fill');
-  assert.deepEqual(flat?.filter, ['==', ['get', 'base'], 0]);
-  assert.deepEqual(flat?.paint?.['fill-opacity'], ['interpolate', ['linear'], ['zoom'], 13.2, 0, 13.7, 1]);
+  assert.equal((flat?.filter as unknown[])[0], 'all');
+  assert.equal(((flat?.filter as unknown[])[1] as unknown[])[0], 'within');
+  assert.deepEqual((flat?.filter as unknown[]).at(-1), ['==', ['get', 'base'], 0]);
+  assert.deepEqual(flat?.paint?.['fill-opacity'], ['interpolate', ['linear'], ['zoom'], 13.5, 0, 13.8, 1]);
   assert.equal(flat?.paint?.['fill-outline-color'], '#a99f8b');
   assert.deepEqual(flat?.paint?.['fill-color'], buildingColorExpression(undefined));
   const shadow = byId.get('building-shadows-high');
   assert.ok(shadow?.type === 'fill');
-  assert.equal(shadow.minzoom, 13.2);
-  assert.deepEqual(shadow.paint?.['fill-opacity'], ['interpolate', ['linear'], ['zoom'], 13.2, 0, 13.7, 0.3]);
+  assert.equal(shadow.minzoom, 13.5);
+  assert.deepEqual(shadow.paint?.['fill-opacity'], ['interpolate', ['linear'], ['zoom'], 13.5, 0, 14, 0.3]);
   assert.deepEqual(shadow.paint?.['fill-translate'], ['interpolate', ['linear'], ['zoom'],
-    13.2, ['literal', [0, 0]], 16, ['literal', [7, 7]], 20, ['literal', [9, 9]]]);
+    13.5, ['literal', [0, 0]], 16, ['literal', [7, 7]], 20, ['literal', [9, 9]]]);
   assert.equal(shadow.paint?.['fill-translate-anchor'], 'map');
   const lowShadow = byId.get('building-shadows-low');
   assert.ok(lowShadow?.type === 'fill');
-  assert.equal(lowShadow.minzoom, 13.2);
-  assert.deepEqual(lowShadow.paint?.['fill-opacity'], ['interpolate', ['linear'], ['zoom'], 13.2, 0, 13.7, 0.22]);
+  assert.equal(lowShadow.minzoom, 13.5);
+  assert.deepEqual(lowShadow.paint?.['fill-opacity'], ['interpolate', ['linear'], ['zoom'], 13.5, 0, 14, 0.22]);
   assert.deepEqual(lowShadow.paint?.['fill-translate'], ['interpolate', ['linear'], ['zoom'],
-    13.2, ['literal', [0, 0]], 16, ['literal', [3, 3]], 20, ['literal', [5, 5]]]);
+    13.5, ['literal', [0, 0]], 16, ['literal', [3, 3]], 20, ['literal', [5, 5]]]);
   const blockFill = byId.get('blocks-fill');
   assert.ok(blockFill?.type === 'fill');
   assert.deepEqual(blockFill.paint?.['fill-color'], blockTypeColorExpression());
@@ -159,7 +162,7 @@ test('block and building palettes match the legend and distinguish named landmar
   assert.equal(swatches.get('保留地虚线边界'), MAP_PALETTE.boundary);
   const districtLegend = MAP_LEGEND_ITEMS.find((item) => item.label === '城区边界');
   assert.ok(districtLegend && 'symbol' in districtLegend);
-  assert.equal(districtLegend.symbol, 'solid-line');
+  assert.equal(districtLegend.symbol, 'dashed-line');
   const reserveLegend = MAP_LEGEND_ITEMS.find((item) => item.label === '保留地虚线边界');
   assert.ok(reserveLegend && 'symbol' in reserveLegend);
   assert.equal(reserveLegend.symbol, 'dashed-line');
@@ -173,15 +176,11 @@ test('block and building palettes match the legend and distinguish named landmar
   const reserveBoundary = byId.get('north-border');
   assert.ok(reserveBoundary?.type === 'line');
   assert.equal(reserveBoundary.paint?.['line-color'], MAP_PALETTE.boundary);
-  assert.deepEqual(reserveBoundary.paint?.['line-dasharray'], [2, 1.3]);
-  const historicMarkers = byId.get('historic-markers');
-  assert.ok(historicMarkers?.type === 'circle');
-  assert.deepEqual(historicMarkers.filter, ['==', ['get', 'category'], '古迹']);
-  assert.equal(historicMarkers.paint?.['circle-color'], MAP_PALETTE.monument);
-  const landmarkMarkers = byId.get('landmark-markers');
-  assert.ok(landmarkMarkers?.type === 'circle');
-  assert.deepEqual(landmarkMarkers.paint?.['circle-color'],
-    ['case', ['==', ['get', 'id'], 'continental-tower'], MAP_PALETTE.continental, MAP_PALETTE.landmark]);
+  assert.deepEqual(reserveBoundary.paint?.['line-dasharray'], [3, 2]);
+  const plate = byId.get('overview-place-labels');
+  assert.ok(plate?.type === 'symbol');
+  assert.equal(plate.layout?.['icon-text-fit'], 'both');
+  assert.equal(plate.paint?.['text-color'], '#f4ead1');
   const selected = buildingColorExpression('church') as unknown[];
   assert.deepEqual(selected.slice(0, 3), ['case', ['==', ['get', 'id'], 'church'], '#f2c66d']);
   assert.deepEqual(selected[3], buildingColorExpression(undefined));
@@ -206,11 +205,11 @@ test('park labels use one existing point annotation per park, not polygon placem
   const parkLabels = style.layers.find((layer) => layer.id === 'park-labels');
   assert.ok(parkLabels?.type === 'symbol');
   assert.equal(parkLabels.source, 'annotations');
-  assert.equal(parkLabels.minzoom, 9.5);
+  assert.equal(parkLabels.minzoom, 11);
   assert.deepEqual(parkLabels.filter, [
     'all',
     ['==', ['get', 'annotationType'], 'place'],
-    ['==', ['get', 'category'], '公园'],
+    ['all', ['==', ['get', 'category'], '公园'], ['!', ['in', ['get', 'id'], ['literal', OVERVIEW_PLACES]]]],
   ]);
   assert.equal(style.layers.some((layer) => layer.type === 'symbol' && layer.source === 'parks'), false);
 
@@ -230,22 +229,10 @@ test('LOD appearances fade from zero, with real geometry fading in', () => {
   const style = createMapStyle('/', emptyMapDatasets());
   const byId = new Map(style.layers.map((layer) => [layer.id, layer]));
   const fades: Array<[string, string, number, number, number?]> = [
-    ['rural-roads', 'line-opacity', 11, 0.82],
     ['blocks-fill', 'fill-opacity', 13.5, 1, 0.3],
-    ['arterial-casing', 'line-opacity', 9.5, 0.97],
-    ['arterials', 'line-opacity', 9.5, 0.94],
     ['trees-3d', 'fill-extrusion-opacity', 13.5, 1],
-    ['normal-stations', 'circle-opacity', 9.5, 1],
-    ['normal-stations', 'circle-stroke-opacity', 9.5, 1],
-    ['landmark-markers', 'circle-opacity', 9.5, 1],
-    ['landmark-markers', 'circle-stroke-opacity', 9.5, 1],
-    ['other-place-markers', 'circle-opacity', 12.5, 1],
-    ['other-place-markers', 'circle-stroke-opacity', 12.5, 1],
-    ['road-labels', 'text-opacity', 12.5, 1],
-    ['landmark-labels', 'text-opacity', 9.5, 1],
-    ['station-labels', 'text-opacity', 11.5, 1],
-    ['other-place-labels', 'text-opacity', 12.5, 1],
-    ['park-labels', 'text-opacity', 9.5, 1],
+    ['terrain-contours', 'line-opacity', 13, 0.6],
+    ['terrain-contour-labels', 'text-opacity', 13, 0.75],
   ];
   for (const [layerId, property, minZoom, target, span = 0.5] of fades) {
     const layer = byId.get(layerId);
@@ -285,7 +272,7 @@ test('point label annotations carry cross-layer collision priorities', () => {
   );
 });
 
-test('landmark-matching station labels move to the zoom-14 layer without hiding station dots', () => {
+test('landmark-matching station labels retain the Phase 4 station-name thresholds', () => {
   const datasets = emptyMapDatasets();
   datasets.pois.features.push({
     type: 'Feature', geometry: { type: 'Point', coordinates: [0, 0] },
@@ -303,8 +290,10 @@ test('landmark-matching station labels move to the zoom-14 layer without hiding 
   assert.equal(station?.properties?.duplicateLandmarkLabel, 1);
   const ordinary = style.layers.find((layer) => layer.id === 'station-labels');
   const duplicate = style.layers.find((layer) => layer.id === 'duplicate-station-labels');
-  assert.ok(ordinary?.type === 'symbol' && duplicate?.type === 'symbol');
+  assert.ok(ordinary?.type === 'symbol');
+  assert.equal(duplicate, undefined);
   assert.equal(ordinary.minzoom, 11.5);
-  assert.equal(duplicate.minzoom, 14);
+  assert.equal(style.layers.find(layer => layer.id === 'transfer-station-labels')?.minzoom, 10);
+  assert.deepEqual(ordinary.filter, ['all', ['==', ['get', 'annotationType'], 'station'], ['==', ['get', 'transfer'], 0]]);
   assert.ok(style.layers.some((layer) => layer.id === 'normal-stations'));
 });
