@@ -17,10 +17,10 @@ test('four contiguous LOD tiers preserve required thresholds', () => {
   const layers = new Map(style.layers.map((layer) => [layer.id, layer]));
   const blocks = layers.get('blocks-fill');
   assert.ok(blocks?.type === 'fill');
-  assert.deepEqual(blocks.paint?.['fill-opacity'], ['interpolate', ['linear'], ['zoom'], 11, 0, 12, 1]);
+  assert.deepEqual(blocks.paint?.['fill-opacity'], ['interpolate', ['linear'], ['zoom'], 13.5, 0, 13.8, 1]);
 });
 
-test('local textures, northwest light, water shelf and neighbor opacity have explicit styles', () => {
+test('northwest light and the raster painter replace the vector surface fills', () => {
   const style = createMapStyle('/', emptyMapDatasets());
   const layers = new Map(style.layers.map((layer) => [layer.id, layer]));
   assert.ok(MAP_LIGHT.east < 0 && MAP_LIGHT.north > 0);
@@ -28,10 +28,7 @@ test('local textures, northwest light, water shelf and neighbor opacity have exp
   assert.deepEqual(shadowOffset(-0.7), [-0.7, -0.7]);
   const land = layers.get('land-fill');
   assert.ok(land?.type === 'fill');
-  assert.deepEqual(land.paint?.['fill-opacity'], ['match', ['get', 'kind'], ['ottoman', 'east-region'], 0.4, 1]);
-  const furrows = layers.get('farm-furrows');
-  assert.ok(furrows?.type === 'fill');
-  assert.deepEqual(furrows.paint?.['fill-pattern'], ['match', ['get', 'furrow'], 'north', 'furrow-north-pattern', 'furrow-east-pattern']);
-  for (const id of ['coastal-shelf', 'coastline-shallows', 'wood-canopy', 'contour-shade']) assert.ok(layers.has(id));
-  assert.ok(style.layers.findIndex((layer) => layer.id === 'coastline-shallows') < style.layers.findIndex((layer) => layer.id === 'land-fill'));
+  assert.equal(land.paint?.['fill-opacity'], 0);
+  for (const id of ['coastal-shelf', 'coastline-shallows', 'wood-canopy', 'contour-shade']) assert.ok(!layers.has(id));
+  assert.ok(layers.has('painted-terrain'));
 });

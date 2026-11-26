@@ -23,10 +23,10 @@ export type DatasetName = keyof MapDatasets;
 export type DatasetFetcher = (url: string) => Promise<unknown>;
 
 export const initialDatasetNames = [
-  'land', 'districts', 'roads', 'metro_lines', 'metro_stations', 'pois', 'labels', 'boundaries', 'parks', 'surface', 'terrain',
+  'land', 'districts', 'roads', 'metro_lines', 'metro_stations', 'pois', 'labels', 'boundaries', 'parks', 'surface', 'terrain', 'blocks',
 ] as const satisfies readonly DatasetName[];
 
-export const lazyDatasetNames = ['blocks', 'buildings', 'trees'] as const satisfies readonly DatasetName[];
+export const lazyDatasetNames = ['buildings', 'trees'] as const satisfies readonly DatasetName[];
 
 export const datasetNames: readonly DatasetName[] = [
   'land', 'districts', 'parks', 'roads', 'metro_lines', 'metro_stations', 'buildings', 'pois',

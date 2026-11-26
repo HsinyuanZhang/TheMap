@@ -9,9 +9,9 @@ import {
 
 test('dataset groups keep large GeoJSON out of the initial request set', () => {
   assert.deepEqual(initialDatasetNames, [
-    'land', 'districts', 'roads', 'metro_lines', 'metro_stations', 'pois', 'labels', 'boundaries', 'parks', 'surface', 'terrain',
+    'land', 'districts', 'roads', 'metro_lines', 'metro_stations', 'pois', 'labels', 'boundaries', 'parks', 'surface', 'terrain', 'blocks',
   ]);
-  assert.deepEqual(lazyDatasetNames, ['blocks', 'buildings', 'trees']);
+  assert.deepEqual(lazyDatasetNames, ['buildings', 'trees']);
 });
 
 test('dataset loader deduplicates in-flight requests and caches successful data', async () => {

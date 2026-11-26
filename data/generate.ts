@@ -10,8 +10,9 @@ import { airport, airportAircraft, airportApron, airportPiers, airportPosition, 
 import { metroPaths, regionalArterials } from "./phase4-roads";
 import { cleanRoundedPath, finalizeRoadNetwork, prepareRoadNetwork } from "./phase4-network";
 import { roundHillroadTurns } from "./hillroad-arcs";
+import { beverlyHeight } from "../src/terrain-elevation";
 import {
-  beverlyHills, coastline, coastlineYAtX, districts, generatedBoundaries, land, parks, points,
+  coastline, coastlineYAtX, districts, generatedBoundaries, land, parks, points,
   districtLabelPositions, reserveTownCenters, roads as sourceRoads, stations, transitLines, urbanGrid,
   type RoadDefinition, type Ring, type XY,
 } from "./source";
@@ -898,26 +899,8 @@ function clipLineToRing(line: readonly XY[], ring: Ring): XY[][] {
 const beverlyDistrict = districtById.get("beverly")!;
 const reserveDistrict = districtById.get("reserve")!;
 
-function smoothstep(value: number): number {
-  const t = Math.max(0, Math.min(1, value));
-  return t * t * (3 - 2 * t);
-}
-
 function elevationAt(x: number, y: number): number {
-  if (x < 9 || x > 28 || y < 0 || y > 9) return 0;
-  if (y < 2.8) {
-    const coast = Math.min(35, 18 + 8 * Math.sin(x * 0.6));
-    return coast * smoothstep((2.8 - y) / 0.5);
-  }
-  const edgeDistance = Math.min(x - 15.3, 28 - x, y - 2.8, 9 - y);
-  if (edgeDistance <= 0) return 0;
-  const taper = smoothstep(edgeDistance / 1.15);
-  const hills = Math.pow(beverlyHills.reduce((sum, hill) => {
-    const dx = (x - hill.center[0]) / hill.sigmaX;
-    const dy = (y - hill.center[1]) / hill.sigmaY;
-    return sum + Math.pow(hill.peak * Math.exp(-0.5 * (dx * dx + dy * dy)), 4);
-  }, 0), 0.25);
-  return Math.min(320, hills * taper);
+  return beverlyHeight(x, y);
 }
 
 function elevationSlope(x: number, y: number): number {

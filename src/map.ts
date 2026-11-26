@@ -32,6 +32,7 @@ import { applyMapRenderState, mapRenderState } from './map-render-state';
 import { layerIds, type LayerGroup } from './map-layer-groups';
 import { createRegionalBlockPattern } from './block-patterns';
 import { deferRegionalPatternLayers, registerRegionalPatternsBeforeLayers } from './regional-pattern-layers';
+import { PaintProtocol } from './paint-protocol';
 
 export type { Dataset, MapDatasets } from './dataset-loader';
 
@@ -120,6 +121,7 @@ export class MapController {
   private isOverview = true;
   private selectedId: string | undefined;
   private showAllBuildings = false;
+  private readonly painter: PaintProtocol;
 
   constructor(
     container: HTMLElement,
@@ -134,7 +136,8 @@ export class MapController {
     this.onSelection = onSelection;
     this.onError = onError;
     this.panel = panel;
-    const initialStyle = deferRegionalPatternLayers(createMapStyle(import.meta.env.BASE_URL, datasets));
+    this.painter = new PaintProtocol(datasets, onError);
+    const initialStyle = deferRegionalPatternLayers(createMapStyle(import.meta.env.BASE_URL, datasets, undefined, this.painter.tiles()));
     this.map = new MapLibreMap({
       container,
       style: initialStyle.style,
@@ -157,8 +160,11 @@ export class MapController {
       if (image) this.map.addImage(id, image, { pixelRatio: 1 });
     });
     this.map.on('style.load', () => {
+      this.painter.attach(this.map);
       registerRegionalPatternsBeforeLayers(this.map, initialStyle.layers);
     });
+    this.map.on('remove', () => this.painter.dispose());
+    this.map.on('zoom', () => this.painter.renderState(this.map.getZoom(), this.map.getPitch(), this.layerVisibility.buildings));
     this.installCenterBounds();
     this.map.on('movestart', () => {
       if (!this.applyingLayout) this.isOverview = false;
@@ -255,7 +261,7 @@ export class MapController {
   private installHitTesting(): void {
     const clickableLayers = [
       'transfer-stations', 'normal-stations', 'landmark-markers', 'historic-markers', 'other-place-markers',
-      'buildings-flat', 'buildings-3d', 'parks-fill', 'arterials', 'highways', 'district-fill', 'land-fill',
+      'buildings-flat', 'buildings-3d', 'parks-hit', 'arterials', 'highways', 'district-fill', 'land-fill',
     ];
     const findClickable = (point: MapMouseEvent['point']): { kind: MapSelection['kind']; id: string } | undefined => {
       for (const layerId of clickableLayers) {
@@ -282,6 +288,7 @@ export class MapController {
     this.datasets[name] = data;
     const source = this.map.getSource(name) as GeoJSONSource | undefined;
     source?.setData(data);
+    if (['land', 'districts', 'parks', 'roads', 'blocks', 'boundaries', 'surface', 'terrain'].includes(name)) this.painter.update(this.datasets);
     if (name === 'buildings' && this.selectedId) this.setSelectedId(this.selectedId);
     if (name === 'pois' || name === 'metro_stations') {
       (this.map.getSource('annotations') as GeoJSONSource | undefined)?.setData(createPointAnnotations(this.datasets));
@@ -301,6 +308,7 @@ export class MapController {
   }
 
   private applyRenderingState(): void {
+    this.painter.renderState(this.map.getZoom(), this.map.getPitch(), this.layerVisibility.buildings);
     const state = mapRenderState(
       this.map.getPitch(), this.layerVisibility.buildings, this.showAllBuildings, this.selectedId,
     );

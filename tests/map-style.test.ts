@@ -48,12 +48,11 @@ test('style includes local sky, light, generated borders, and all dataset source
     assert.equal(style.sources[name]?.type, 'geojson', name);
   }
   const layers = style.layers.map((layer) => layer.id);
-  assert.ok(layers.indexOf('coastline-shallows') < layers.indexOf('land-fill'));
-  assert.ok(layers.indexOf('parks-fill') < layers.indexOf('lake-fill'));
+  assert.ok(layers.indexOf('paint-first') < layers.indexOf('painted-terrain'));
+  assert.ok(layers.indexOf('painted-terrain') < layers.indexOf('district-boundaries'));
   assert.ok(layers.includes('north-border'));
   assert.equal(layers.includes('streets'), false);
-  assert.ok(layers.includes('terrain-bands'));
-  assert.ok(layers.includes('woods-fill'));
+  for (const id of ['terrain-bands', 'woods-fill', 'farms', 'wood-canopy', 'farm-furrows', 'lake-fill', 'parks-outline', 'piers', 'town-blocks-fill', 'contour-shade']) assert.ok(!layers.includes(id), id);
   assert.ok(layers.includes('terrain-contours'));
   assert.ok(layers.indexOf('road-labels') < layers.indexOf('park-labels'));
   assert.ok(layers.indexOf('park-labels') < layers.indexOf('other-place-labels'));
@@ -61,39 +60,32 @@ test('style includes local sky, light, generated borders, and all dataset source
   assert.ok(layers.indexOf('station-labels') < layers.indexOf('landmark-labels'));
   const districtLabels = style.layers.find((layer) => layer.id === 'district-labels');
   const northBorder = style.layers.find((layer) => layer.id === 'north-border');
-  const terrainBands = style.layers.find((layer) => layer.id === 'terrain-bands');
   const terrainContours = style.layers.find((layer) => layer.id === 'terrain-contours');
   const terrainContourLabels = style.layers.find((layer) => layer.id === 'terrain-contour-labels');
-  const farms = style.layers.find((layer) => layer.id === 'farms');
-  const woods = style.layers.find((layer) => layer.id === 'woods-fill');
   assert.equal(districtLabels && districtLabels.type !== 'background' ? districtLabels.source : undefined, 'labels');
   assert.equal(northBorder && northBorder.type !== 'background' ? northBorder.source : undefined, 'boundaries');
-  assert.deepEqual(layerFilter(terrainBands), ['==', ['get', 'kind'], 'band']);
   assert.deepEqual(layerFilter(terrainContours), ['==', ['get', 'kind'], 'contour']);
   assert.deepEqual(layerFilter(terrainContourLabels), ['==', ['get', 'kind'], 'contour']);
   assert.deepEqual(terrainContourLabels?.type === 'symbol' ? terrainContourLabels.layout?.['text-field'] : undefined,
     ['concat', ['to-string', ['get', 'level']], ' m']);
-  assert.deepEqual(layerFilter(farms), ['==', ['get', 'kind'], 'farm']);
-  assert.deepEqual(farms?.type === 'fill' ? farms.paint?.['fill-color'] : undefined,
-    ['match', ['get', 'tone'], 0, ...MAP_PALETTE.farmTones.slice(0, 1), 1, ...MAP_PALETTE.farmTones.slice(1, 2),
-      2, ...MAP_PALETTE.farmTones.slice(2, 3), 3, ...MAP_PALETTE.farmTones.slice(3, 4), MAP_PALETTE.farmTones[0]]);
-  assert.deepEqual(layerFilter(woods), ['==', ['get', 'kind'], 'wood']);
+  const parks = style.layers.find(layer => layer.id === 'parks-hit');
+  assert.ok(parks?.type === 'fill');
+  assert.equal(parks.paint?.['fill-opacity'], 0);
+  const painted = style.sources['painted-terrain'];
+  assert.ok(painted?.type === 'raster');
+  assert.equal(painted.tileSize, 512);
+  assert.equal(painted.minzoom, 7);
+  assert.equal(painted.maxzoom, 14);
+  assert.ok(painted.tiles?.every(url => url.startsWith('paint://')));
 });
 
 test('rendering layers use the requested LOD and building-height expressions', () => {
   const style = createMapStyle('/', emptyMapDatasets());
   const byId = new Map(style.layers.map((layer) => [layer.id, layer]));
   assert.equal(byId.get('highways')?.minzoom, 7.2);
-  assert.equal(byId.get('woods-fill')?.minzoom, 8.5);
-  assert.equal(byId.get('farms')?.minzoom, 11);
-  const bands = byId.get('terrain-bands');
-  assert.ok(bands?.type === 'fill');
-  assert.equal(bands.source, 'terrain');
-  assert.equal(byId.get('terrain-bands')?.minzoom, 10);
-  assert.equal(byId.get('terrain-contours')?.minzoom, 12.5);
-  assert.equal(byId.get('parks-fill')?.minzoom, 9.5);
-  assert.equal(byId.get('blocks-fill')?.minzoom, 10);
-  assert.equal(byId.get('town-blocks-fill')?.minzoom, 10);
+  assert.equal(byId.get('terrain-contours')?.minzoom, 13);
+  assert.equal(byId.get('parks-hit')?.minzoom, undefined);
+  assert.equal(byId.get('blocks-fill')?.minzoom, 13.5);
   assert.equal(byId.get('rural-roads')?.minzoom, 11);
   assert.equal(byId.get('buildings-3d')?.minzoom, 12);
   assert.equal(byId.get('buildings-flat')?.minzoom, 13.2);
@@ -136,9 +128,6 @@ test('rendering layers use the requested LOD and building-height expressions', (
   assert.ok(blockFill?.type === 'fill');
   assert.deepEqual(blockFill.paint?.['fill-color'], blockTypeColorExpression());
   assert.equal(blockFill.paint?.['fill-outline-color'], '#bfb49d');
-  const townBlocks = byId.get('town-blocks-fill');
-  assert.ok(townBlocks?.type === 'fill');
-  assert.deepEqual(townBlocks.paint?.['fill-color'], blockTypeColorExpression());
   assert.equal(byId.get('trees-3d')?.layout?.visibility, 'none');
 });
 
@@ -158,7 +147,7 @@ test('block and building palettes match the legend and distinguish named landmar
     ['==', ['get', 'kind'], 'landmark'], '#6f8791',
   ]);
   assert.deepEqual(buildingColor.at(7), ['step', ['get', 'top'], '#eee6d6', 45, '#dccfb6', 90, '#c3c9c9', 150, '#9fb1bc']);
-  assert.ok(swatches.has('地形色带') && swatches.has('树林') && swatches.has('农田') && swatches.has('军事区'));
+  assert.ok(swatches.has('丘陵地形') && swatches.has('树林') && swatches.has('农田') && swatches.has('军事区') && swatches.has('机场'));
   assert.ok(swatches.has('其他地标') && swatches.has('历史古迹') && swatches.has('大陆集团大厦'));
   assert.equal(swatches.get('楼房（高度分色）'),
     'linear-gradient(90deg, #eee6d6, #dccfb6, #c3c9c9, #9fb1bc)');
@@ -241,14 +230,8 @@ test('LOD appearances fade from zero, with real geometry fading in', () => {
   const style = createMapStyle('/', emptyMapDatasets());
   const byId = new Map(style.layers.map((layer) => [layer.id, layer]));
   const fades: Array<[string, string, number, number, number?]> = [
-    ['farms', 'fill-opacity', 11, 0.9],
-    ['town-blocks-fill', 'fill-opacity', 11, 1, 1],
     ['rural-roads', 'line-opacity', 11, 0.82],
-    ['parks-fill', 'fill-opacity', 9.5, 0.96],
-    ['lake-fill', 'fill-opacity', 9.5, 0.95],
-    ['parks-outline', 'line-opacity', 9.5, 1],
-    ['blocks-fill', 'fill-opacity', 11, 1, 1],
-    ['piers', 'fill-opacity', 11.5, 0.95],
+    ['blocks-fill', 'fill-opacity', 13.5, 1, 0.3],
     ['arterial-casing', 'line-opacity', 9.5, 0.97],
     ['arterials', 'line-opacity', 9.5, 0.94],
     ['trees-3d', 'fill-extrusion-opacity', 13.5, 1],

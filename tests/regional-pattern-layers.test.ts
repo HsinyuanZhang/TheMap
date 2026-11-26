@@ -7,6 +7,9 @@ import { deferRegionalPatternLayers, registerRegionalPatternsBeforeLayers } from
 
 test('regional Canvas images are installed before their layers on initial load and retries', () => {
   const sourceStyle = createMapStyle('/', emptyMapDatasets());
+  sourceStyle.layers.splice(1, 0,
+    { id: 'wood-canopy', type: 'fill', source: 'surface', paint: { 'fill-pattern': 'canopy-pattern' } },
+    { id: 'farm-furrows', type: 'fill', source: 'surface', paint: { 'fill-pattern': 'furrow-north-pattern' } });
   const textureIndex = sourceStyle.layers.findIndex((layer) => layer.id === 'farm-furrows');
   const expectedBefore = sourceStyle.layers[textureIndex + 1]?.id;
   const deferred = deferRegionalPatternLayers(sourceStyle);
