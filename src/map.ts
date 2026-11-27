@@ -173,7 +173,7 @@ export class MapController {
       dragRotate: true,
       touchPitch: true,
       attributionControl: false,
-      canvasContextAttributes: { antialias: true, preserveDrawingBuffer: true },
+      canvasContextAttributes: { antialias: true },
     });
     this.map.on('styleimagemissing', ({ id }) => {
       if (this.map.hasImage(id)) return;
@@ -183,6 +183,8 @@ export class MapController {
     this.map.on('style.load', () => {
       this.painter.attach(this.map);
       registerRegionalPatternsBeforeLayers(this.map, initialStyle.layers);
+      this.applyLayerVisibility();
+      this.applyLensVisuals();
     });
     this.map.on('remove', () => this.painter.dispose());
     this.map.on('zoom', () => this.painter.renderState(this.map.getZoom(), this.map.getPitch(), this.layerVisibility.buildings));
@@ -288,12 +290,13 @@ export class MapController {
       'buildings-flat', 'buildings-3d', 'parks-hit', 'arterials', 'highways', 'district-fill', 'land-fill',
     ];
     const findClickable = (point: MapMouseEvent['point']): { kind: MapSelection['kind']; id: string } | undefined => {
-      for (const layerId of clickableLayers) {
-        if (!this.map.getLayer(layerId)) continue;
-        const rendered = this.map.queryRenderedFeatures(point, { layers: [layerId] });
+      const layers = clickableLayers.filter((id) => this.map.getLayer(id));
+      if (layers.length === 0) return undefined;
+      const rendered = this.map.queryRenderedFeatures(point, { layers });
+      for (const layerId of layers) {
         const feature = rendered.find((candidate) => {
           const id = featureId(candidate);
-          return id && (layerId.includes('station') || this.contentIds.has(id));
+          return candidate.layer.id === layerId && id && (layerId.includes('station') || this.contentIds.has(id));
         });
         if (feature) return { kind: layerId.includes('station') ? 'station' : 'place', id: featureId(feature) };
       }
@@ -303,17 +306,37 @@ export class MapController {
       const selection = findClickable(event.point);
       if (selection) this.onSelection(selection);
     });
+    let frame: number | undefined;
+    let pending: MapMouseEvent | undefined;
+    const clearHover = (): void => {
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      frame = undefined;
+      pending = undefined;
+      this.map.getCanvas().style.cursor = '';
+      this.onHover?.(undefined);
+    };
     this.map.on('mousemove', (event) => {
       if (event.originalEvent.buttons !== 0) {
-        this.onHover?.(undefined);
+        clearHover();
         return;
       }
-      const hovered = findClickable(event.point);
-      this.map.getCanvas().style.cursor = hovered ? 'pointer' : '';
-      this.onHover?.(hovered ? { selection: hovered, x: event.originalEvent.clientX, y: event.originalEvent.clientY } : undefined);
+      pending = event;
+      if (frame !== undefined) return;
+      frame = requestAnimationFrame(() => {
+        frame = undefined;
+        const event = pending;
+        pending = undefined;
+        if (!event) return;
+        const hovered = findClickable(event.point);
+        this.map.getCanvas().style.cursor = hovered ? 'pointer' : '';
+        this.onHover?.(hovered ? { selection: hovered, x: event.originalEvent.clientX, y: event.originalEvent.clientY } : undefined);
+      });
     });
-    this.map.getCanvas().addEventListener('mouseleave', () => {
-      this.onHover?.(undefined);
+    this.map.getCanvas().addEventListener('mouseleave', clearHover);
+    this.map.on('movestart', clearHover);
+    this.map.once('remove', () => {
+      clearHover();
+      this.map.getCanvas().removeEventListener('mouseleave', clearHover);
     });
   }
 
@@ -332,6 +355,7 @@ export class MapController {
       (this.map.getSource('annotations') as GeoJSONSource | undefined)?.setData(createPointAnnotations(this.datasets));
     }
     if (this.activeSelection) this.syncSelectionHighlight();
+    this.applyLensVisuals();
     this.applyRenderingState();
     if (shouldRefitOverview) this.fitInitialBounds();
   }
@@ -365,7 +389,6 @@ export class MapController {
   }
 
   private applyLensVisuals(): void {
-    if (!this.map.isStyleLoaded()) return;
     const isTransit = this.activeLens === 'transit';
     const isBuildings = this.activeLens === 'buildings';
     const isDistricts = this.activeLens === 'districts';

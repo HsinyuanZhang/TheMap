@@ -5,6 +5,8 @@ import { DISTRICT_LENS_COLORS } from './map-lenses';
 import { METRO_COLORS, PLACE_COLORS, placeKind } from './map-overlays';
 import { MAP_LEGEND_ITEMS } from './map-style';
 import { renderSafeMarkdown } from './markdown';
+import { ModalFocus } from './modal-focus';
+import { almanacGroups } from './atlas-ui';
 
 type AlmanacPageId = 'overview' | 'districts' | 'places' | 'transit' | 'legend';
 
@@ -25,6 +27,7 @@ export class AlmanacModal {
   private readonly modal: HTMLElement;
   private readonly nav: HTMLElement;
   private readonly body: HTMLElement;
+  private readonly focus: ModalFocus;
   private activePage: AlmanacPageId = 'overview';
   private aboutMarkdown = '';
   private places: ReadonlyMap<string, ContentDocument> = new Map();
@@ -35,6 +38,7 @@ export class AlmanacModal {
     this.modal = modal;
     this.nav = nav;
     this.body = body;
+    this.focus = new ModalFocus(modal);
 
     this.modal.addEventListener('click', (event) => {
       if (event.target === this.modal) this.close();
@@ -64,14 +68,15 @@ export class AlmanacModal {
     this.activePage = page;
     this.renderNav();
     void this.renderPage();
-    this.modal.hidden = false;
+    this.focus.open();
   }
 
   close(): void {
-    this.modal.hidden = true;
+    this.focus.close();
   }
 
   private renderNav(): void {
+    const restoreFocus = this.nav.contains(document.activeElement);
     this.nav.replaceChildren();
     const heading = document.createElement('div');
     heading.className = 'almanac-hd';
@@ -91,6 +96,7 @@ export class AlmanacModal {
       });
       this.nav.append(button);
     }
+    if (restoreFocus) this.nav.querySelector<HTMLButtonElement>('[aria-current="page"]')?.focus();
   }
 
   private jump(selection: MapSelection): void {
@@ -146,9 +152,7 @@ export class AlmanacModal {
     title.textContent = '行政区划与周边邻区';
     this.body.append(title);
 
-    const docs = [...this.places.values()];
-    const districts = docs.filter((doc) => doc.metadata.type === '城区');
-    const neighbors = docs.filter((doc) => doc.metadata.type === '邻区');
+    const { districts, neighbors } = almanacGroups(this.places, this.datasets);
 
     const appendGroup = (headingText: string, list: ContentDocument[]): void => {
       const h3 = document.createElement('h3');

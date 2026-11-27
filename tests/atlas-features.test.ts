@@ -16,6 +16,7 @@ import {
 import { buildingColorExpression } from '../src/map-style';
 import { getStationNavigation } from '../src/station-info';
 import { labelImageIds, labelImageOptions } from '../src/map-label-images';
+import { almanacGroups, consumeSearchEscape, districtName, ignoreMapShortcut } from '../src/atlas-ui';
 
 const data = Object.fromEntries(
   await Promise.all(
@@ -33,6 +34,32 @@ for (const file of placeFiles) {
   const doc = parseContentDocument(await readFile(new URL(file, placeDir), 'utf8'));
   places.set(doc.metadata.id, doc);
 }
+
+test('almanac uses all district and neighbor data ids, independent of content type', () => {
+  const groups = almanacGroups(places, data);
+  assert.equal(groups.districts.length, 9);
+  assert.deepEqual(new Set(groups.districts.map((doc) => doc.metadata.id)), new Set(data.districts.features.map((feature) => feature.properties?.id)));
+  assert.deepEqual(new Set(groups.neighbors.map((doc) => doc.metadata.id)), new Set(['ottoman', 'east-region']));
+  assert.deepEqual(almanacGroups(places, undefined), { districts: [], neighbors: [] });
+  assert.deepEqual(almanacGroups(new Map(), data), { districts: [], neighbors: [] });
+});
+
+test('legend names come from content records with data and id fallbacks', () => {
+  for (const id of Object.keys(DISTRICT_LENS_COLORS)) assert.equal(districtName(id, places, data), places.get(id)!.metadata.name);
+  assert.equal(districtName('central', new Map(), data), String(data.districts.features.find((feature) => feature.properties?.id === 'central')!.properties?.name));
+  assert.equal(districtName('missing', places, undefined), 'missing');
+});
+
+test('map shortcuts ignore editing targets and open modals, and search consumes Escape', () => {
+  for (const tagName of ['INPUT', 'TEXTAREA']) assert.equal(ignoreMapShortcut({ tagName } as unknown as EventTarget, false), true);
+  assert.equal(ignoreMapShortcut({ isContentEditable: true } as unknown as EventTarget, false), true);
+  assert.equal(ignoreMapShortcut(null, true), true);
+  assert.equal(ignoreMapShortcut({ tagName: 'BUTTON' } as unknown as EventTarget, true), true);
+  assert.equal(ignoreMapShortcut(null, false), false);
+  const event = new Event('keydown', { bubbles: true });
+  consumeSearchEscape(event);
+  assert.equal(event.cancelBubble, true);
+});
 
 test('search index finds places, districts, and metro stations by name or line id', () => {
   const index = buildSearchIndex(places, data);

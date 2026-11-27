@@ -25,6 +25,8 @@ import { buildSearchIndex, searchEntries, type SearchEntry } from './search';
 import { AlmanacModal } from './almanac';
 import { downloadAtlasPoster } from './poster-export';
 import { UI_ICONS } from './ui-icons';
+import { ModalFocus } from './modal-focus';
+import { consumeSearchEscape, districtName, ignoreMapShortcut } from './atlas-ui';
 
 function element<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
@@ -55,6 +57,7 @@ const shareCopyUrl = element<HTMLButtonElement>('share-copy-url');
 const shareDownloadPng = element<HTMLButtonElement>('share-download-png');
 const sharePopStatus = element<HTMLParagraphElement>('share-pop-status');
 const helpModal = element<HTMLDivElement>('help-modal');
+const helpFocus = new ModalFocus(helpModal);
 const toastElement = element<HTMLDivElement>('toast');
 const searchInput = element<HTMLInputElement>('search-input');
 const searchResults = element<HTMLDivElement>('search-results');
@@ -186,7 +189,7 @@ function renderLegendForLens(): void {
       btn.className = 'legend-chip';
       const swatch = document.createElement('i');
       swatch.style.background = info.color;
-      btn.append(swatch, document.createTextNode(info.name));
+      btn.append(swatch, document.createTextNode(districtName(id, getPlaces(), datasets)));
       btn.addEventListener('click', () => openSelection({ kind: 'place', id }, true));
       legendInteractive.append(btn);
     }
@@ -391,9 +394,12 @@ function closePanel(): void {
   document.title = '摩纳哥地图';
 }
 
+let hoveredTarget: string | undefined;
+
 function handleHover(hover: MapHoverInfo | undefined): void {
   if (!hover) {
     mapTooltip.hidden = true;
+    hoveredTarget = undefined;
     return;
   }
   let name = '';
@@ -419,13 +425,17 @@ function handleHover(hover: MapHoverInfo | undefined): void {
       : `${place.metadata.type} · ${place.metadata.district}`;
   }
 
-  mapTooltip.replaceChildren();
-  const title = document.createElement('strong');
-  title.textContent = name;
-  const subEl = document.createElement('div');
-  subEl.className = 'tt-sub';
-  subEl.textContent = sub;
-  mapTooltip.append(title, subEl);
+  const target = `${hover.selection.kind}/${hover.selection.id}`;
+  if (target !== hoveredTarget) {
+    hoveredTarget = target;
+    mapTooltip.replaceChildren();
+    const title = document.createElement('strong');
+    title.textContent = name;
+    const subEl = document.createElement('div');
+    subEl.className = 'tt-sub';
+    subEl.textContent = sub;
+    mapTooltip.append(title, subEl);
+  }
   mapTooltip.hidden = false;
 
   const pad = 14;
@@ -498,6 +508,8 @@ function renderSearchResults(): void {
       btn.append(dot, main, cat);
       btn.addEventListener('mousedown', (event) => {
         event.preventDefault();
+      });
+      btn.addEventListener('click', () => {
         searchInput.value = '';
         searchInput.blur();
         openSelection({ kind: entry.kind, id: entry.id }, true);
@@ -538,11 +550,11 @@ function toggleSharePopover(force?: boolean): void {
 function openHelpModal(): void {
   toggleLayerPopover(false);
   toggleSharePopover(false);
-  helpModal.hidden = false;
+  helpFocus.open();
 }
 
 function closeHelpModal(): void {
-  helpModal.hidden = true;
+  helpFocus.close();
 }
 
 async function copyCurrentUrl(): Promise<void> {
@@ -555,12 +567,12 @@ async function copyCurrentUrl(): Promise<void> {
   }
 }
 
-function exportPoster(): void {
-  const canvas = mapController?.map.getCanvas();
-  if (!canvas) return;
+async function exportPoster(): Promise<void> {
+  if (!mapController || shareDownloadPng.disabled) return;
+  shareDownloadPng.disabled = true;
   try {
     const summary = placePanel.activeSummary;
-    downloadAtlasPoster(canvas, {
+    await downloadAtlasPoster(mapController.map, {
       lens: getLensDefinition(activeLens),
       selectedTitle: summary.title,
       selectedSubtitle: summary.subtitle,
@@ -569,6 +581,8 @@ function exportPoster(): void {
     showToast('已导出 1600×900 视图海报 PNG');
   } catch {
     sharePopStatus.textContent = '导出失败，请稍后重试。';
+  } finally {
+    shareDownloadPng.disabled = false;
   }
 }
 
@@ -679,7 +693,10 @@ document.addEventListener('pointerdown', (event) => {
 searchInput.addEventListener('focus', () => renderSearchResults());
 searchInput.addEventListener('input', () => renderSearchResults());
 searchInput.addEventListener('keydown', (event) => {
-  if (event.key === 'ArrowDown') {
+  if (event.key === 'Tab' && !event.shiftKey && !searchResults.hidden && currentSearchMatches.length > 0) {
+    event.preventDefault();
+    searchResults.querySelector<HTMLButtonElement>('button')?.focus();
+  } else if (event.key === 'ArrowDown') {
     event.preventDefault();
     if (currentSearchMatches.length > 0) {
       activeSearchIndex = (activeSearchIndex + 1) % currentSearchMatches.length;
@@ -700,6 +717,7 @@ searchInput.addEventListener('keydown', (event) => {
       openSelection({ kind: chosen.kind, id: chosen.id }, true);
     }
   } else if (event.key === 'Escape') {
+    consumeSearchEscape(event);
     closeSearchResults();
     searchInput.blur();
   }
@@ -726,7 +744,9 @@ window.addEventListener('hashchange', () => {
 // Global keyboard shortcuts (usaciv-inspired navigation)
 window.addEventListener('keydown', (event) => {
   const target = event.target as HTMLElement | null;
-  const typing = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+  const modalOpen = !helpModal.hidden || almanacModal.isOpen;
+  if (modalOpen && event.key !== 'Escape') return;
+  const typing = ignoreMapShortcut(target, false);
 
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
     event.preventDefault();

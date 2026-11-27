@@ -1,4 +1,5 @@
 import type { MapLensDefinition } from './map-lenses';
+import type { Map as MapLibreMap } from 'maplibre-gl';
 
 export interface PosterMetadata {
   lens: MapLensDefinition;
@@ -27,6 +28,7 @@ export function composeAtlasPoster(
   // Center-crop the live MapLibre canvas cleanly into the 1600x788 map viewport.
   const srcW = mapCanvas.width;
   const srcH = mapCanvas.height;
+  if (srcW === 0 || srcH === 0) throw new Error('Map canvas is empty.');
   if (srcW > 0 && srcH > 0) {
     const srcAspect = srcW / srcH;
     const dstAspect = POSTER_W / mapH;
@@ -99,7 +101,7 @@ export function composeAtlasPoster(
 
   ctx.fillStyle = '#b9ab88';
   ctx.font = 'italic 16px "Noto Serif CJK SC", "Source Han Serif SC", Georgia, serif';
-  ctx.fillText('太平洋海角特别行政区 · 交互式图志', 110, mapH + 84);
+  ctx.fillText('摩纳哥特别行政区 · 交互式图志', 110, mapH + 84);
 
   // Center lens badge.
   const midX = 630;
@@ -131,8 +133,34 @@ export function composeAtlasPoster(
   return canvas;
 }
 
-export function downloadAtlasPoster(mapCanvas: HTMLCanvasElement, meta: PosterMetadata): void {
-  const poster = composeAtlasPoster(mapCanvas, meta);
+export function captureAtlasPoster(map: Pick<MapLibreMap, 'loaded' | 'once' | 'on' | 'off' | 'triggerRepaint' | 'getCanvas'>, meta: PosterMetadata): Promise<HTMLCanvasElement> {
+  return new Promise((resolve, reject) => {
+    const cleanup = (): void => {
+      map.off('idle', render);
+      map.off('render', capture);
+      map.off('remove', removed);
+    };
+    const removed = (): void => {
+      cleanup();
+      reject(new Error('Map removed during export.'));
+    };
+    const capture = (): void => {
+      cleanup();
+      try { resolve(composeAtlasPoster(map.getCanvas(), meta)); }
+      catch (error) { reject(error); }
+    };
+    const render = (): void => {
+      map.once('render', capture);
+      map.triggerRepaint();
+    };
+    map.once('remove', removed);
+    if (map.loaded()) render();
+    else map.once('idle', render);
+  });
+}
+
+export async function downloadAtlasPoster(map: MapLibreMap, meta: PosterMetadata): Promise<void> {
+  const poster = await captureAtlasPoster(map, meta);
   const link = document.createElement('a');
   const slug = meta.selectedTitle ? `-${meta.selectedTitle}` : '';
   link.download = `monaco-map-${meta.lens.id}${slug}.png`;

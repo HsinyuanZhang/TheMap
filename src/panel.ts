@@ -66,7 +66,7 @@ export class PlacePanel {
     this.kicker.textContent = '城市图志';
     this.title.textContent = '摩纳哥';
     this.currentTitle = '摩纳哥';
-    this.currentSubtitle = '太平洋海角特别行政区';
+    this.currentSubtitle = '摩纳哥特别行政区';
     this.meta.hidden = true;
     this.meta.replaceChildren();
     this.stationMeta.hidden = true;

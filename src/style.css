@@ -1097,7 +1097,7 @@ body.panel-open .atlas-dock { right: 416px; }
     gap: 6px;
     z-index: 10;
   }
-  body.panel-open .atlas-dock { right: 0; }
+  body.panel-open .atlas-dock { right: 0; visibility: hidden; pointer-events: none; }
 
   .lens-dock {
     max-width: none;

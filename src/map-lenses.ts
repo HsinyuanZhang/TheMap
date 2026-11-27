@@ -51,16 +51,16 @@ export const MAP_LENSES: readonly MapLensDefinition[] = [
   },
 ] as const;
 
-export const DISTRICT_LENS_COLORS: Readonly<Record<string, { name: string; color: string }>> = {
-  manhattan: { name: '曼哈顿区', color: '#d49a57' },
-  central: { name: '中区', color: '#789bb8' },
-  beverly: { name: '贝弗利区', color: '#7ea670' },
-  'st-germain': { name: '圣日耳曼区', color: '#b88392' },
-  harlem: { name: '哈林区', color: '#c4a662' },
-  uptown: { name: '上城区', color: '#8f88b8' },
-  brooklyn: { name: '布鲁克林区', color: '#c77f6b' },
-  'fleet-port': { name: '舰队港', color: '#6b9496' },
-  reserve: { name: '保留地', color: '#6a8f63' },
+export const DISTRICT_LENS_COLORS: Readonly<Record<string, { color: string }>> = {
+  manhattan: { color: '#d49a57' },
+  central: { color: '#789bb8' },
+  beverly: { color: '#7ea670' },
+  'st-germain': { color: '#b88392' },
+  harlem: { color: '#c4a662' },
+  uptown: { color: '#8f88b8' },
+  brooklyn: { color: '#c77f6b' },
+  'fleet-port': { color: '#6b9496' },
+  reserve: { color: '#6a8f63' },
 };
 
 export const BUILDING_HEIGHT_BANDS: readonly BuildingHeightBand[] = [
@@ -183,4 +183,3 @@ export function buildSelectionHighlight(
 
   return { type: 'FeatureCollection', features };
 }
-
