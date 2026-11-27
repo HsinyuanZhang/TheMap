@@ -13,6 +13,10 @@
       <main class="map-shell" aria-label="摩纳哥地图">
         <div id="map" class="map-canvas" aria-label="可缩放、可平移和倾斜的交互地图"></div>
         <div id="map-error" class="map-error" role="alert" hidden></div>
+        <div id="map-data-notice" class="map-data-notice" role="status" aria-live="polite" hidden>
+          <span id="map-data-message"></span>
+          <button id="retry-map-data" class="control-button secondary" type="button">重试</button>
+        </div>
 
         <header class="map-toolbar">
           <a class="brand" href="/" aria-label="返回地图首页">
@@ -32,7 +36,13 @@
           <label><input type="checkbox" data-layer-toggle="roads" checked /> 公路</label>
           <label><input type="checkbox" data-layer-toggle="buildings" checked /> 建筑</label>
           <label><input type="checkbox" data-layer-toggle="places" checked /> 地点</label>
+          <label><input id="all-buildings-3d" type="checkbox" /> 全部楼房立体</label>
         </nav>
+
+        <details class="map-legend" aria-label="地图图例">
+          <summary>地图图例</summary>
+          <ul id="map-legend-items"></ul>
+        </details>
 
         <aside id="place-panel" class="place-panel is-open" aria-label="地点介绍" aria-live="polite">
           <div class="panel-grabber" aria-hidden="true"></div>
