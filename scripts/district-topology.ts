@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { area, booleanPointInPolygon, booleanValid, featureCollection, intersect, point } from '@turf/turf';
 import type { Feature, MultiPolygon, Polygon } from 'geojson';
-import { pointInRing, reversePath, samePoint, splitPathAtX, splitPathAtY } from '../data/geometry';
+import { distanceToSegment, pointInRing, reversePath, samePoint, splitPathAtX, splitPathAtY } from '../data/geometry';
 import {
-  districtLabelPositions, districts, generatedBoundaries, internalBoundaries, land, stations,
+  coastline, districtLabelPositions, districts, generatedBoundaries, internalBoundaries, land, stations,
   type Ring, type XY,
 } from '../data/source';
 
@@ -16,9 +16,9 @@ export interface DistrictTopologyReport {
   districtUnionAreaKm2: number;
 }
 
-const expectedDistrictIds = ['manhattan', 'beverly', 'st-germain', 'harlem', 'uptown', 'brooklyn', 'fleet-port', 'reserve'];
+const expectedDistrictIds = ['manhattan', 'central', 'beverly', 'st-germain', 'harlem', 'uptown', 'brooklyn', 'fleet-port', 'reserve'];
 const targetAreasKm2: Record<string, number> = {
-  beverly: 171,
+  beverly: 115,
   harlem: 96,
   brooklyn: 96,
   reserve: 407,
@@ -32,7 +32,6 @@ const phase2AreasKm2: Record<string, number> = {
 const phase2GeometryHashes: Record<string, string> = {
   monaco: '2ac93d4b32372523eb76ea1608dbf588816d1e6ba51f9def9a9be7738a114955',
   manhattan: '0386c487eb282573c41b53aad0dd0bcc8215a5cf458e8227968f264c08abd1ee',
-  'fleet-port': 'e17673d17191145e289f5eacffd5290e8c576ca6436fdb266c181db8126ea695',
 };
 const longitudeScale = 111.32 * Math.cos((40 * Math.PI) / 180);
 const latitudeScale = 110.574;
@@ -127,6 +126,35 @@ export function validateDistrictTopology(): DistrictTopologyReport {
   }
 
   const areasKm2 = Object.fromEntries(districts.map((district) => [district.id, planarArea(district.ring)]));
+  const fleet = districtById.get('fleet-port')!;
+  const fleetBaselineArea = phase2AreasKm2['fleet-port']!;
+  assert.ok(Math.abs(areasKm2['fleet-port']! - fleetBaselineArea) <= fleetBaselineArea * 0.005,
+    'Fleet Port area must stay within 0.5% of Phase 2');
+  const fleetCoast = fleet.ring.filter(p => coastline.slice(1).some((b, i) => distanceToSegment(p, coastline[i]!, b) < 1e-8));
+  const fleetCoastCoordinates = fleetCoast.map(([x, y]) => [
+    Number((-150 + x / longitudeScale).toFixed(6)), Number((40 + y / latitudeScale).toFixed(6)),
+  ]);
+  assert.equal(fleetCoast.length, 56, 'Fleet Port coastline vertex count must remain unchanged');
+  assert.equal(createHash('sha256').update(JSON.stringify(fleetCoastCoordinates)).digest('hex'),
+    '61d083977ca23f292473f049e28c94b132de5633adfb61247c40509009233710',
+    'Fleet Port coastline vertices must remain identical to Phase 2');
+  for (const [id, neighbour] of [['uptown-fleet-port', 'uptown'], ['fleet-port-reserve', 'reserve']] as const) {
+    const boundary = internalBoundaries.find(b => b.id === id)?.coordinates;
+    assert.ok(boundary, `${id}: Fleet Port shared boundary is required`);
+    assert.ok(containsPath(fleet.ring, boundary) || containsPath(fleet.ring, reversePath(boundary)), `${id}: Fleet Port must use its complete shared boundary`);
+    const ring = districtById.get(neighbour)!.ring;
+    assert.ok(containsPath(ring, boundary) || containsPath(ring, reversePath(boundary)), `${id}: neighbouring boundary vertices must be identical`);
+  }
+  assert.ok(areasKm2.central! >= 46 && areasKm2.central! <= 62, 'Central area must be 46–62 km²');
+  for (const id of ['manhattan-central', 'st-germain-central', 'central-beverly']) {
+    const path = internalBoundaries.find((boundary) => boundary.id === id)?.coordinates;
+    assert.ok(path, `${id} boundary is required`);
+    const neighbour = id === 'central-beverly' ? 'beverly' : id.split('-central')[0]!;
+    assert.ok(containsPath(districtById.get('central')!.ring, path)
+      || containsPath(districtById.get('central')!.ring, reversePath(path)), `${id} must bound Central`);
+    assert.ok(containsPath(districtById.get(neighbour)!.ring, path)
+      || containsPath(districtById.get(neighbour)!.ring, reversePath(path)), `${id} must be shared`);
+  }
   for (const [id, target] of Object.entries(targetAreasKm2)) {
     const actual = areasKm2[id]!;
     assert.ok(Math.abs(actual - target) <= target * 0.15, `${id} area ${actual.toFixed(3)} km² must be within 15% of ${target} km²`);
@@ -182,7 +210,7 @@ export function validateDistrictTopology(): DistrictTopologyReport {
   const reserveNorth = splitNorth.filter((position, index) => index === 0 || !samePoint(position, splitNorth[index - 1]!));
   assert.ok(containsPath(reserve.ring, reversePath(reserveNorth)), 'reserve must separate the cities from the outer north border');
   assert.ok(containsPath(reserve.ring, [[36, 0.2], [36, 34]]), 'reserve must separate the cities from the outer east border');
-  const sixCities = ['manhattan', 'beverly', 'st-germain', 'harlem', 'uptown', 'brooklyn'];
+  const sixCities = ['manhattan', 'central', 'beverly', 'st-germain', 'harlem', 'uptown', 'brooklyn'];
   for (const id of sixCities) {
     const ring = districtById.get(id)!.ring;
     assert.ok(ring.every(([x, y]) => Math.abs(x - 36) > 1e-8 && Math.abs(y - 34) > 1e-8), `${id} must not touch the outer north/east border`);
@@ -212,7 +240,7 @@ export function validateDistrictTopology(): DistrictTopologyReport {
   const labelCounts = Object.fromEntries(regionIds.map((id) => [id, districtLabelPositions[id]?.length ?? 1]));
   assert.equal(labelCounts.reserve, 2, 'reserve must have exactly two labels');
   for (const id of regionIds.filter((id) => id !== 'reserve')) assert.equal(labelCounts[id], 1, `${id} must have one label`);
-  assert.equal(Object.values(labelCounts).reduce((sum, count) => sum + count, 0), 11, 'all mapped regions must have exactly eleven labels');
+  assert.equal(Object.values(labelCounts).reduce((sum, count) => sum + count, 0), 12, 'all mapped regions must have exactly twelve labels');
 
   return { areasKm2, movedStations, labelCounts, monacoAreaKm2, districtUnionAreaKm2 };
 }

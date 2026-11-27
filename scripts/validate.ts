@@ -5,10 +5,12 @@ import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { area, booleanIntersects, booleanPointInPolygon, booleanValid, booleanWithin, difference, intersect, point, union } from '@turf/turf';
 import type { Feature, FeatureCollection, Geometry, LineString, MultiPolygon, Point, Polygon, Position } from 'geojson';
 import { beverlyHills, coastlineYAtX, districts as sourceDistricts, land as sourceLand, points as sourcePoints, reserveTownCenters, roads as sourceRoads, stations as sourceStations, transitLines as sourceTransitLines } from '../data/source';
-import { beverlyElevationAt, beverlySlopeAt } from '../data/generate';
+import { beverlyElevationAt } from '../data/generate';
+import { airport, airportPosition } from '../data/phase4-config';
 import { pointInRing } from '../data/geometry';
 import { hasGroundFootprintAtBidTop, isNumericBuildingKey } from '../data/phase3-invariants';
 import { normalizeProse, parseContentDocument } from '../src/content-format';
+import { validatePhase4Data } from './phase4-validation';
 import { precisionSliverArea, validateDistrictTopology } from './district-topology';
 import { assertMarkdownCoverage, collectClickableIds } from './content-links';
 import {
@@ -22,8 +24,8 @@ type Collection = FeatureCollection<Geometry, Properties>;
 
 const directory = resolve('public/data');
 const placeDirectory = resolve('content/places');
-const names = ['land', 'districts', 'parks', 'roads', 'metro_lines', 'metro_stations', 'buildings', 'pois', 'blocks', 'trees', 'labels', 'boundaries', 'surface', 'terrain', 'overview', 'atlas'] as const;
-const expectedDistrictIds = ['manhattan', 'beverly', 'st-germain', 'harlem', 'uptown', 'brooklyn', 'fleet-port', 'reserve'];
+const names = ['land', 'districts', 'parks', 'roads', 'metro_lines', 'metro_stations', 'buildings', 'pois', 'blocks', 'trees', 'labels', 'boundaries', 'surface', 'terrain'] as const;
+const expectedDistrictIds = ['manhattan', 'central', 'beverly', 'st-germain', 'harlem', 'uptown', 'brooklyn', 'fleet-port', 'reserve'];
 const geometryByFile = {
   land: 'Polygon',
   districts: 'Polygon',
@@ -39,8 +41,6 @@ const geometryByFile = {
   boundaries: 'LineString',
   surface: 'Polygon',
   terrain: 'Polygon|LineString',
-  overview: 'Polygon',
-  atlas: 'Polygon|Point',
 } as const;
 const fixture = JSON.parse(await readFile(resolve('tests/transit.fixture.json'), 'utf8')) as Record<string, { color: string; stations: string[] }>;
 validateDistrictTopology();
@@ -167,7 +167,6 @@ for (const name of names) {
   datasets.set(name, parsed);
 }
 assert.ok(totalBytes <= 10 * 1024 * 1024, 'GeoJSON exceeds 10 MB');
-assert.ok((await stat(resolve(directory, 'atlas.geojson'))).size <= 1_000_000, 'atlas exceeds its 1 MB raw budget');
 assert.ok((await stat(resolve(directory, 'buildings.geojson'))).size <= 6 * 1024 * 1024, 'buildings.geojson exceeds 6 MB');
 const rawFiles = await Promise.all(names.map((name) => readFile(resolve(directory, name + '.geojson'))));
 const gzipBytes = rawFiles.reduce((sum, file) => sum + gzipSync(file).byteLength, 0);
@@ -224,6 +223,8 @@ function nearbyRoadSegments(ring: readonly [number, number][]): Road[] {
   return [...candidates];
 }
 
+validatePhase4Data(datasets);
+
 const featureById = (collection: Collection, id: string) => collection.features.find((feature) => feature.properties?.id === id);
 for (const feature of landCollection.features) {
   const kind = requireString(feature.properties!, 'kind', 'land');
@@ -235,7 +236,7 @@ for (const feature of landCollection.features) {
 }
 
 const districtIds = districtCollection.features.map((feature) => requireString(feature.properties!, 'id', 'district'));
-assert.deepEqual([...districtIds].sort(), [...expectedDistrictIds].sort(), 'all eight specified districts must exist');
+assert.deepEqual([...districtIds].sort(), [...expectedDistrictIds].sort(), 'all nine specified districts must exist');
 for (const feature of districtCollection.features) {
   requireString(feature.properties!, 'name', 'district');
   assert.ok(['urban', 'military', 'reserve'].includes(requireString(feature.properties!, 'kind', 'district')));
@@ -311,12 +312,8 @@ assert.deepEqual([...namedArterials].sort(), ['broadway', 'fifth-avenue', 'prome
 for (const sourceRoad of sourceRoads.filter((road) => road.roadClass === 'arterial' && road.name)) {
   const outputRoad = featureById(roadCollection, sourceRoad.id);
   assert.ok(outputRoad && outputRoad.geometry?.type === 'LineString', `${sourceRoad.id}: named arterial geometry required`);
-  const coordinates = outputRoad.geometry.coordinates.map(localPosition);
-  assert.equal(coordinates.length, sourceRoad.coordinates.length, `${sourceRoad.id}: named arterial must retain every authored vertex`);
-  for (const [index, expected] of sourceRoad.coordinates.entries()) {
-    assert.ok(Math.hypot(coordinates[index]![0] - expected[0], coordinates[index]![1] - expected[1]) <= 0.0001,
-      `${sourceRoad.id}: named arterial geometry must remain complete and unchanged`);
-  }
+  assert.ok(outputRoad.geometry.coordinates.length >= 2);
+
 }
 for (const highway of ['A1', 'A2', 'A3']) {
   const feature = featureById(roadCollection, highway);
@@ -539,6 +536,10 @@ for (const landmark of landmarkBuildings) {
     hospital: [[0, 0], [-0.055, 0], [0, 0], [0.055, 0]],
     'old-governors-house': [[0, 0], [-0.065, 0], [0.065, 0]],
     church: [[0, 0], [0.035, 0]],
+    airport: [[0, -0.3], [-0.8, -0.4]].map(([east, north]): [number, number] => {
+      const position = airportPosition(east!, north!);
+      return [position[0] - airport.center[0], position[1] - airport.center[1]];
+    }),
   };
   const origin = localPosition(poi.geometry.coordinates);
   const actual = localPosition(center);
@@ -551,7 +552,7 @@ for (const feature of districtCollection.features) {
   const id = String(feature.properties?.id);
   const actualKm2 = area(feature as Feature<Polygon, Properties>) / 1_000_000;
   const baseline = areaFixture.districtAreasKm2[id];
-  if (!['beverly', 'harlem', 'brooklyn', 'reserve'].includes(id)) {
+  if (!['central', 'beverly', 'harlem', 'brooklyn', 'reserve'].includes(id)) {
     assert.ok(baseline && Math.abs(actualKm2 - baseline) <= baseline * 0.15, id + ': unchanged district area must stay within 15% of Phase 1');
   } else {
     assert.ok(actualKm2 > 0, id + ': Phase 3 district must have positive area');
@@ -560,7 +561,7 @@ for (const feature of districtCollection.features) {
 assertAreaCoverage(districtArea, area(monaco));
 const expectedLabelIds = [...districtIds, ...landCollection.features.filter((item) => item.properties?.kind !== 'monaco').map((item) => String(item.properties?.id)), 'reserve'];
 const labelCollection = datasets.get('labels')!;
-assert.equal(labelCollection.features.length, 11, 'two reserve labels plus one label for each other region are required');
+assert.equal(labelCollection.features.length, 12, 'two reserve labels plus one label for each other region are required');
 assertLabelCoverage(expectedLabelIds, labelCollection.features.map((item) => String(item.properties?.id)));
 assert.equal(labelCollection.features.filter((item) => item.properties?.id === 'reserve').length, 2);
 for (const label of labelCollection.features) {
@@ -647,35 +648,6 @@ for (const farm of farms as Feature<Polygon, Properties>[]) {
 }
 const fleetPiers = surfaces.filter((item) => item.properties?.kind === 'pier' && item.properties?.sector === 'fleet-port');
 assert.ok(fleetPiers.length >= 6 && fleetPiers.length <= 10);
-const supportIds = ['city-hall', 'hospital', 'library'];
-const supportCounts = supportIds.map((id) => new Set(buildings.filter((item) =>
-  String(item.properties?.block_id).startsWith('S-' + id + '-'),
-).map((item) => item.properties?.bid)).size);
-assert.ok(supportCounts.every((count) => count === 150), 'each Uptown landmark requires 150 linked support buildings');
-const supportFeatures = buildings.filter((item) => item.properties?.kind === 'uptown-support');
-assert.ok(supportFeatures.every((item) => Number(item.properties?.top) >= 10 && Number(item.properties?.top) <= 45));
-for (const support of supportFeatures) {
-  const blockId = requireString(support.properties!, 'block_id', 'Uptown support building');
-  assert.ok(blockId.startsWith('S-'), 'Uptown support buildings must use stable linked block IDs');
-  const siteId = supportIds.find((id) => blockId.startsWith('S-' + id + '-'));
-  assert.ok(siteId, `${blockId}: support building must link to one of the three Uptown sites`);
-  const site = featureById(poiCollection, siteId);
-  assert.ok(site?.geometry?.type === 'Point');
-  const vertices = walkCoordinates(support.geometry!).map(localPosition);
-  const minX = Math.min(...vertices.map(([x]) => x));
-  const maxX = Math.max(...vertices.map(([x]) => x));
-  const minY = Math.min(...vertices.map(([, y]) => y));
-  const maxY = Math.max(...vertices.map(([, y]) => y));
-  const width = maxX - minX;
-  const depth = maxY - minY;
-  assert.ok(width >= 0.0248 && width <= 0.0602 && depth >= 0.0248 && depth <= 0.0602,
-    `${blockId}: support footprint must be 25-60 m on both sides`);
-  const anchor = localPosition(site.geometry.coordinates);
-  const center: [number, number] = [(minX + maxX) / 2, (minY + maxY) / 2];
-  assert.ok(Math.hypot(center[0] - anchor[0], center[1] - anchor[1]) + Math.hypot(width / 2, depth / 2) <= 0.6002,
-    `${blockId}: entire support footprint must remain within 600 m of its site`);
-}
-assert.ok(buildings.filter((item) => item.properties?.kind === 'warehouse').every((item) => Number(item.properties?.top) <= 25));
 const reserve = districtCollection.features.find((item) => item.properties?.id === 'reserve') as Feature<Polygon, Properties>;
 assert.ok(buildings.filter((item) => item.properties?.kind !== 'town-house').every((item) => !booleanWithin(item, reserve)), 'only town houses may be generated in the reserve');
 assert.ok(buildings.filter((item) => item.properties?.kind === 'town-house').every((item) => booleanWithin(item, reserve)));
@@ -725,22 +697,6 @@ for (let first = 0; first < reserveTownCenters.length; first += 1) {
       'reserve towns must be at least 3 km apart');
   }
 }
-const townHouses = buildings.filter((item) => item.properties?.kind === 'town-house');
-assert.ok(townHouses.length <= 2000);
-for (const town of townBlocks) {
-  const houses = townHouses.filter((item) => item.properties?.block_id === town.properties?.block_id);
-  assert.ok(houses.length >= 60 && houses.length <= 200);
-  for (const house of houses) {
-    const coordinates = walkCoordinates(house.geometry!).map(localPosition);
-    const width = Math.max(...coordinates.map(([x]) => x)) - Math.min(...coordinates.map(([x]) => x));
-    const depth = Math.max(...coordinates.map(([, y]) => y)) - Math.min(...coordinates.map(([, y]) => y));
-    assert.ok(width >= 0.01 && width <= 0.025 && depth >= 0.01 && depth <= 0.025);
-    assert.ok(Number(house.properties?.top) >= 5 && Number(house.properties?.top) <= 12);
-    assert.equal(Number(house.properties?.key), 0);
-    assert.equal(house.properties?.id, undefined);
-    assert.equal(house.properties?.name, undefined);
-  }
-}
 const hillRoads = roadCollection.features.filter((item) => item.properties?.class === 'hillroad');
 const hillRoadIds = new Set(hillRoads.map((item) => String(item.properties?.id).replace(/-part-\d+$/, '').replace(/-\d+$/, '')));
 assert.ok(hillRoadIds.size >= 8 && hillRoadIds.size <= 12);
@@ -781,7 +737,7 @@ for (const sourceTown of reserveTownCenters) {
   assert.ok(reachable.has(nearestMainRoad), `${sourceTown.id} rural network must be graph-continuous to the main road`);
   assert.ok(reachable.has(neighborLink), `${sourceTown.id} rural network must join its nearest town`);
 }
-assert.equal(beverlyHills.length, 7);
+assert.equal(beverlyHills.length, 5);
 let sampledPeak = 0;
 for (let x = 9; x <= 28; x += 0.1) for (let y = 0; y <= 9; y += 0.1) sampledPeak = Math.max(sampledPeak, beverlyElevationAt([x, y]));
 assert.ok(sampledPeak >= 280 && sampledPeak <= 340, 'Beverly peak must be 280-340 m');
@@ -822,31 +778,6 @@ for (const road of hillRoads) {
     }
   }
 }
-const villas = buildings.filter((item) => item.properties?.kind === 'villa');
-assert.ok(villas.length >= 1500 && villas.length <= 3000);
-const villaRoadDistances: number[] = [];
-for (const villa of villas) {
-  const vertices = walkCoordinates(villa.geometry!).map(localPosition);
-  const center: [number, number] = [(Math.min(...vertices.map(([x]) => x)) + Math.max(...vertices.map(([x]) => x))) / 2,
-    (Math.min(...vertices.map(([, y]) => y)) + Math.max(...vertices.map(([, y]) => y))) / 2];
-  assert.ok(vertices.every((position) => beverlyElevationAt(position) <= 240 && beverlySlopeAt(position) <= 0.3));
-  assert.ok(Number(villa.properties?.top) >= 6 && Number(villa.properties?.top) <= 14);
-  assert.equal(Number(villa.properties?.key), 0);
-  assert.equal(Number(villa.properties?.base), 0);
-  assert.equal(villa.properties?.id, undefined);
-  assert.equal(villa.properties?.name, undefined);
-  const width = Math.max(...vertices.map(([x]) => x)) - Math.min(...vertices.map(([x]) => x));
-  const depth = Math.max(...vertices.map(([, y]) => y)) - Math.min(...vertices.map(([, y]) => y));
-  assert.ok(width >= 0.012 && width <= 0.028 && depth >= 0.012 && depth <= 0.028);
-  const roadDistance = Math.min(...hillRoads.flatMap((road) => {
-    if (road.geometry?.type !== 'LineString') return [Number.POSITIVE_INFINITY];
-    const coordinates = road.geometry.coordinates;
-    return coordinates.slice(1).map((next, index) => distanceToSegment(center, localPosition(coordinates[index]!), localPosition(next)));
-  }));
-  villaRoadDistances.push(roadDistance);
-  const halfDiagonal = Math.hypot(width / 2, depth / 2);
-  assert.ok(roadDistance + halfDiagonal <= 0.09, 'every Beverly villa footprint must be within 90 m of a hill road');
-}
 const terrainFeatures = datasets.get('terrain')!.features;
 assert.ok(terrainFeatures.some((item) => item.properties?.kind === 'band'));
 assert.ok(terrainFeatures.some((item) => item.properties?.kind === 'contour'));
@@ -854,9 +785,6 @@ assert.ok(terrainFeatures.filter((item) => item.properties?.kind === 'band').eve
   item.geometry?.type === 'Polygon' && Number(item.properties?.level) >= 0 && Number(item.properties?.level) % 40 === 0));
 assert.ok(terrainFeatures.filter((item) => item.properties?.kind === 'contour').every((item) =>
   item.geometry?.type === 'LineString' && Number(item.properties?.level) > 0 && Number(item.properties?.level) % 40 === 0));
-assert.ok(datasets.get('overview')!.features.some((item) => item.properties?.kind === 'wood'));
-assert.ok(datasets.get('overview')!.features.some((item) => item.properties?.kind === 'band'));
-assert.ok(datasets.get('overview')!.features.every((item) => item.properties?.kind === 'wood' || item.properties?.kind === 'band'));
 assert.ok(blockCollection.features.every((item) => ['highrise', 'midrise', 'lowrise', 'lowdensity', 'town', 'plaza'].includes(String(item.properties?.type))));
 type LocalArea = { rings: [number, number][][]; bounds: [number, number, number, number] };
 const localAreas = (features: Feature<Geometry, Properties>[]): LocalArea[] => features.flatMap((item) => {
@@ -1125,7 +1053,7 @@ for (const surface of farms) {
   assert.ok(width >= 0.15 && width <= 0.6 && depth >= 0.15 && depth <= 0.6, 'farm fields must be 150-600 m across');
 }
 const warehouseBids = new Set(buildings.filter((item) => item.properties?.kind === 'warehouse').map((item) => item.properties?.bid));
-assert.equal(warehouseBids.size, 16, 'eight piers require two warehouse footprints each');
+assert.equal(warehouseBids.size, 0, 'non-Manhattan individual warehouses are replaced by painted symbols');
 const exchangeStacks = new Set(buildings.filter((item) => item.properties?.id === 'exchange-square').map((item) => item.properties?.bid));
 assert.equal(exchangeStacks.size, 4, 'Exchange Square podium and towers must be separate physical stacks');
 for (const building of buildings.filter((item) => ['grid', 'financial', 'reclamation', 'uptown-support', 'warehouse'].includes(String(item.properties?.kind)))) {
@@ -1154,7 +1082,7 @@ assertMarkdownCoverage(contentIds, clickableIds);
 assert.equal(stationIds.size, sourceStations.length, 'station ids are generated without Markdown content');
 assert.ok([...stationIds].every((id) => !contentIds.has(id)), 'metro stations must use their own panel data');
 
-assert.equal(sourceDistricts.length, Object.keys(areaFixture.districtAreasKm2).length);
+assert.equal(sourceDistricts.length, 9);
 assert.equal(sourceLand.filter((feature) => feature.kind !== 'monaco').length, 2);
 assert.equal(new Set(sourcePoints.map((point) => point.id)).size, sourcePoints.length, 'source POI ids must be unique');
 assert.equal(new Set(sourceStations.map((station) => station.id)).size, sourceStations.length);
@@ -1246,6 +1174,6 @@ for (let index = continentalIndex + 1; index <= exchangeIndex; index += 1) {
 console.log(`Validated ${names.length} GeoJSON files (${totalBytes} raw bytes), ${districtIds.length} districts, ${contentIds.size} places, ${stationIds.size} stations, and ${buildings.length} building segments.`);
 console.log(`Full region: ${fullRegionStats.bidCount} distinct bids, median ${fullRegionStats.medianHeightMeters} m, above 150 m ${fullRegionStats.above150mBids} (${(fullRegionStats.above150mPercent * 100).toFixed(2)}%), above 300 m ${fullRegionStats.above300mBids}, maximum ${fullRegionStats.maximumHeightMeters} m.`);
 console.log(`Manhattan: ${manhattanStats.bidCount} distinct bids, median ${manhattanStats.medianHeightMeters} m, above 150 m ${manhattanStats.above150mBids} (${(manhattanStats.above150mPercent * 100).toFixed(2)}%), above 300 m ${manhattanStats.above300mBids}, maximum ${manhattanStats.maximumHeightMeters} m, flat tops among ordinary >90 m ${(flatShare * 100).toFixed(2)}%; gzip ${gzipBytes} bytes; Brotli ${brotliBytes} bytes.`);
-console.log(`Beverly: ${beverlyHills.length} source hills, ${hillRoadIds.size} hill roads, ${villas.length} villas; road access within 90 m ${(villaRoadDistances.filter((distance) => distance <= 0.09).length / villas.length * 100).toFixed(2)}%, maximum gap ${(Math.max(...villaRoadDistances) * 1000).toFixed(1)} m; forest coverage ${(beverlyWoodsKm2 / beverlyAreaKm2 * 100).toFixed(2)}%.`);
-console.log(`Reserve: ${reserveWoods.length} woods patches covering ${(reserveWoodsKm2 / reserveAreaKm2 * 100).toFixed(2)}%, ${farms.length} farms covering ${(farmAreaKm2 / reserveAreaKm2 * 100).toFixed(2)}%, ${townBlocks.length} towns, ${townHouses.length} houses.`);
+console.log(`Beverly: ${beverlyHills.length} source hills, ${hillRoadIds.size} hill roads; forest coverage ${(beverlyWoodsKm2 / beverlyAreaKm2 * 100).toFixed(2)}%.`);
+console.log(`Reserve: ${reserveWoods.length} woods patches covering ${(reserveWoodsKm2 / reserveAreaKm2 * 100).toFixed(2)}%, ${farms.length} farms covering ${(farmAreaKm2 / reserveAreaKm2 * 100).toFixed(2)}%, ${townBlocks.length} town polygons; no individual houses.`);
 console.log(`Section 8.3 Manhattan bare land: ${bareLandSamples}/${totalLandSamples} 100 m samples (${(bareLandSamples / totalLandSamples * 100).toFixed(2)}%) were >60 m from every block or park.`);

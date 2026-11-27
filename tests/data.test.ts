@@ -38,16 +38,16 @@ test('U1 joins Broadway directly while U2 follows the east-edge reclamation road
     [4.627522, 1.762421], [5.4, 1.79], [6.4, 1.82], [7.425816, 1.860139],
   ]);
   assert.deepEqual(u2.routes?.['station-exchange-square>station-beverly'], [
-    [7.425816, 1.860139], [9, 2.35], [18.5, 2.2],
+    [7.425816, 1.860139], [11, 3.1], [15.3, 2.9], [18.5, 2.75],
   ]);
-  assert.deepEqual(u2.routes?.['station-beverly>station-beverly-east'], [[18.5, 2.2], [22, 2.2], [26.5, 2.2]]);
+  assert.deepEqual(u2.routes?.['station-beverly>station-beverly-east'], [[18.5, 2.75], [22, 2.75], [26.5, 2.75]]);
   assert.deepEqual(u1.routes?.['station-st-germain>station-city-hall'], [[8, 13], [7.7, 17], [7.45, 20.75]]);
   assert.deepEqual(u1.routes?.['station-city-hall>station-hospital'], [[7.45, 20.75], [8, 21], [9.4, 22], [10.55, 22.1]]);
   assert.ok(!u1ToTimes.some((waypoint) => waypoint[0] === 4.627522 && waypoint[1] === 1.762421));
 });
 
 test('the kilometer source keeps district coverage, named arterial count, and highway connections compact', () => {
-  assert.equal(districts.length, 8);
+  assert.equal(districts.length, 9);
   assert.equal(land.filter((feature) => feature.kind !== 'monaco').length, 2);
   assert.equal(new Set(points.map((point) => point.id)).size, points.length);
   assert.deepEqual(roads.filter((road) => road.roadClass === 'arterial').map((road) => road.id), [

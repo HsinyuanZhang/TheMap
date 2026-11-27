@@ -42,7 +42,7 @@ test('render state applies pitch, building visibility, all-building filters, and
 test('roads layer toggle covers each rendered road layer, including rural roads', () => {
   const style = createMapStyle('/', emptyMapDatasets());
   const renderedRoadLayers = style.layers
-    .filter((layer) => 'source' in layer && layer.source === 'roads')
+    .filter((layer) => 'source' in layer && ['roads', 'road-shields'].includes(String(layer.source)))
     .map((layer) => layer.id)
     .sort();
   assert.deepEqual([...layerIds.roads].sort(), renderedRoadLayers);

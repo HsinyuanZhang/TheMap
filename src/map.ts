@@ -21,6 +21,7 @@ import {
   initialMapCamera,
   mapCameraLimits,
   mobileScaleOffset,
+  overviewBounds,
   pointFocusZoom,
   removeTranslationFromRect,
   shouldFitOverviewForDataset,
@@ -32,6 +33,9 @@ import { applyMapRenderState, mapRenderState } from './map-render-state';
 import { layerIds, type LayerGroup } from './map-layer-groups';
 import { createRegionalBlockPattern } from './block-patterns';
 import { deferRegionalPatternLayers, registerRegionalPatternsBeforeLayers } from './regional-pattern-layers';
+import { PaintProtocol } from './paint-protocol';
+import { LOCAL_IDEOGRAPH_FONT, overlaySources, displayLabels, tagManhattanGeometry } from './map-overlays';
+import { createLabelImage, labelImageIds, labelImageOptions } from './map-label-images';
 
 export type { Dataset, MapDatasets } from './dataset-loader';
 
@@ -76,7 +80,7 @@ function positions(geometry: Geometry | null): Position[] {
 }
 
 function featureId(feature: MapGeoJSONFeature): string {
-  return String(feature.properties?.id ?? '');
+  return feature.properties?.kind === 'airport' ? 'airport' : String(feature.properties?.id ?? '');
 }
 
 function centerOf(features: readonly Feature<Geometry, Record<string, unknown>>[]): [number, number] | undefined {
@@ -120,6 +124,7 @@ export class MapController {
   private isOverview = true;
   private selectedId: string | undefined;
   private showAllBuildings = false;
+  private readonly painter: PaintProtocol;
 
   constructor(
     container: HTMLElement,
@@ -134,7 +139,8 @@ export class MapController {
     this.onSelection = onSelection;
     this.onError = onError;
     this.panel = panel;
-    const initialStyle = deferRegionalPatternLayers(createMapStyle(import.meta.env.BASE_URL, datasets));
+    this.painter = new PaintProtocol(datasets, onError);
+    const initialStyle = deferRegionalPatternLayers(createMapStyle(import.meta.env.BASE_URL, datasets, undefined, this.painter.tiles()));
     this.map = new MapLibreMap({
       container,
       style: initialStyle.style,
@@ -145,7 +151,7 @@ export class MapController {
       minZoom: mapCameraLimits.minZoom,
       maxZoom: mapCameraLimits.maxZoom,
       maxPitch: mapCameraLimits.maxPitch,
-      localIdeographFontFamily: 'sans-serif',
+      localIdeographFontFamily: LOCAL_IDEOGRAPH_FONT,
       dragRotate: true,
       touchPitch: true,
       attributionControl: false,
@@ -153,12 +159,16 @@ export class MapController {
     });
     this.map.on('styleimagemissing', ({ id }) => {
       if (this.map.hasImage(id)) return;
-      const image = createRegionalBlockPattern(id);
-      if (image) this.map.addImage(id, image, { pixelRatio: 1 });
+      const image = createLabelImage(id) ?? createRegionalBlockPattern(id);
+      if (image) this.map.addImage(id, image, labelImageIds.includes(id) ? labelImageOptions(id) : { pixelRatio: 1 });
     });
     this.map.on('style.load', () => {
+      this.painter.attach(this.map);
       registerRegionalPatternsBeforeLayers(this.map, initialStyle.layers);
     });
+    this.map.on('remove', () => this.painter.dispose());
+    this.map.on('zoom', () => this.painter.renderState(this.map.getZoom(), this.map.getPitch(), this.layerVisibility.buildings));
+    this.map.on('resize', () => this.painter.renderState(this.map.getZoom(), this.map.getPitch(), this.layerVisibility.buildings));
     this.installCenterBounds();
     this.map.on('movestart', () => {
       if (!this.applyingLayout) this.isOverview = false;
@@ -186,16 +196,15 @@ export class MapController {
   }
 
   private fitInitialBounds(): boolean {
-    const geometry = this.datasets.land.features.flatMap((feature) => positions(feature.geometry))
-      .filter((position) => Number.isFinite(position[0]) && Number.isFinite(position[1]));
-    if (geometry.length === 0) {
+    const bounds = overviewBounds(this.datasets.districts);
+    if (!bounds) {
       this.isOverview = true;
       return false;
     }
     const wasApplyingLayout = this.applyingLayout;
     this.applyingLayout = true;
     try {
-      this.map.fitBounds(boundsFromPositions(geometry), {
+      this.map.fitBounds(bounds, {
         padding: this.getCameraPadding(),
         absolutePadding: true,
         duration: 0,
@@ -254,8 +263,9 @@ export class MapController {
 
   private installHitTesting(): void {
     const clickableLayers = [
-      'transfer-stations', 'normal-stations', 'landmark-markers', 'historic-markers', 'other-place-markers',
-      'buildings-flat', 'buildings-3d', 'parks-fill', 'arterials', 'highways', 'district-fill', 'land-fill',
+      'overview-place-labels', 'landmark-labels', 'other-place-labels', 'park-labels', 'airport-hit',
+      'transfer-stations', 'normal-stations',
+      'buildings-flat', 'buildings-3d', 'parks-hit', 'arterials', 'highways', 'district-fill', 'land-fill',
     ];
     const findClickable = (point: MapMouseEvent['point']): { kind: MapSelection['kind']; id: string } | undefined => {
       for (const layerId of clickableLayers) {
@@ -281,7 +291,12 @@ export class MapController {
     const shouldRefitOverview = shouldFitOverviewForDataset(name, this.isOverview);
     this.datasets[name] = data;
     const source = this.map.getSource(name) as GeoJSONSource | undefined;
-    source?.setData(data);
+    source?.setData(name === 'labels' ? displayLabels(data) : name === 'blocks' || name === 'buildings' ? tagManhattanGeometry(data, this.datasets.districts) : data);
+    if (name === 'roads' || name === 'metro_lines') for (const [id, derived] of Object.entries(overlaySources(this.datasets))) {
+      if (derived.type === 'geojson') (this.map.getSource(id) as GeoJSONSource | undefined)?.setData(derived.data);
+    }
+    if (name === 'districts') for (const id of ['blocks', 'buildings'] as const) (this.map.getSource(id) as GeoJSONSource | undefined)?.setData(tagManhattanGeometry(this.datasets[id], data));
+    if (['land', 'districts', 'parks', 'roads', 'blocks', 'boundaries', 'surface', 'terrain'].includes(name)) this.painter.update(this.datasets);
     if (name === 'buildings' && this.selectedId) this.setSelectedId(this.selectedId);
     if (name === 'pois' || name === 'metro_stations') {
       (this.map.getSource('annotations') as GeoJSONSource | undefined)?.setData(createPointAnnotations(this.datasets));
@@ -301,6 +316,7 @@ export class MapController {
   }
 
   private applyRenderingState(): void {
+    this.painter.renderState(this.map.getZoom(), this.map.getPitch(), this.layerVisibility.buildings);
     const state = mapRenderState(
       this.map.getPitch(), this.layerVisibility.buildings, this.showAllBuildings, this.selectedId,
     );
@@ -411,6 +427,14 @@ export class MapController {
         padding, absolutePadding: true, duration, essential: true,
       });
       return;
+    }
+    if (id === 'airport') {
+      const airport = this.datasets.surface.features.filter(f => f.properties.kind === 'airport');
+      if (airport.length) {
+        this.isOverview = false;
+        this.map.fitBounds(boundsFromPositions(airport.flatMap(f => positions(f.geometry))), { padding, absolutePadding: true, duration, essential: true, maxZoom: 13 });
+        return;
+      }
     }
     const park = findById(this.datasets.parks, id);
     const road = findById(this.datasets.roads, id);
