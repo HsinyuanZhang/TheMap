@@ -34,8 +34,13 @@ import { layerIds, type LayerGroup } from './map-layer-groups';
 import { createRegionalBlockPattern } from './block-patterns';
 import { deferRegionalPatternLayers, registerRegionalPatternsBeforeLayers } from './regional-pattern-layers';
 import { PaintProtocol } from './paint-protocol';
-import { LOCAL_IDEOGRAPH_FONT, overlaySources, displayLabels, tagManhattanGeometry } from './map-overlays';
+import { LOCAL_IDEOGRAPH_FONT, overlaySources, displayLabels, tagManhattanGeometry, metroOpacity } from './map-overlays';
 import { createLabelImage, labelImageIds, labelImageOptions } from './map-label-images';
+import {
+  buildSelectionHighlight,
+  buildingBandColorExpression,
+  type MapLensId,
+} from './map-lenses';
 
 export type { Dataset, MapDatasets } from './dataset-loader';
 
@@ -43,7 +48,14 @@ export type MapSelection =
   | { kind: 'place'; id: string }
   | { kind: 'station'; id: string };
 
+export interface MapHoverInfo {
+  selection: MapSelection;
+  x: number;
+  y: number;
+}
+
 type SelectionHandler = (selection: MapSelection) => void;
+type HoverHandler = (hover: MapHoverInfo | undefined) => void;
 type ErrorHandler = (message: string) => void;
 
 const longitudeScale = 111.32 * Math.cos((40 * Math.PI) / 180);
@@ -110,6 +122,7 @@ export class MapController {
   readonly ready: Promise<void>;
   private readonly contentIds: ReadonlySet<string>;
   private readonly onSelection: SelectionHandler;
+  private readonly onHover: HoverHandler | undefined;
   private readonly onError: ErrorHandler;
   private readonly datasets: MapDatasets;
   private readonly panel: HTMLElement;
@@ -123,7 +136,10 @@ export class MapController {
   private constrainingCenter = false;
   private isOverview = true;
   private selectedId: string | undefined;
+  private activeSelection: MapSelection | undefined;
   private showAllBuildings = false;
+  private activeLens: MapLensId = 'standard';
+  private activeHeightBand: string | undefined;
   private readonly painter: PaintProtocol;
 
   constructor(
@@ -133,10 +149,12 @@ export class MapController {
     onSelection: SelectionHandler,
     onError: ErrorHandler,
     panel: HTMLElement,
+    onHover?: HoverHandler,
   ) {
     this.datasets = datasets;
     this.contentIds = contentIds;
     this.onSelection = onSelection;
+    this.onHover = onHover;
     this.onError = onError;
     this.panel = panel;
     this.painter = new PaintProtocol(datasets, onError);
@@ -155,7 +173,7 @@ export class MapController {
       dragRotate: true,
       touchPitch: true,
       attributionControl: false,
-      canvasContextAttributes: { antialias: true },
+      canvasContextAttributes: { antialias: true, preserveDrawingBuffer: true },
     });
     this.map.on('styleimagemissing', ({ id }) => {
       if (this.map.hasImage(id)) return;
@@ -172,6 +190,7 @@ export class MapController {
     this.installCenterBounds();
     this.map.on('movestart', () => {
       if (!this.applyingLayout) this.isOverview = false;
+      this.onHover?.(undefined);
     });
     this.map.on('pitch', () => this.applyRenderingState());
     this.map.addControl(new ScaleControl({ maxWidth: 120, unit: 'metric' }), 'bottom-left');
@@ -181,6 +200,7 @@ export class MapController {
           this.installHitTesting();
           this.applyLayerVisibility();
           this.setSelectedId(this.selectedId);
+          this.applyLensVisuals();
           this.fitInitialBounds();
           this.updateLayout();
         } catch (error) {
@@ -269,6 +289,7 @@ export class MapController {
     ];
     const findClickable = (point: MapMouseEvent['point']): { kind: MapSelection['kind']; id: string } | undefined => {
       for (const layerId of clickableLayers) {
+        if (!this.map.getLayer(layerId)) continue;
         const rendered = this.map.queryRenderedFeatures(point, { layers: [layerId] });
         const feature = rendered.find((candidate) => {
           const id = featureId(candidate);
@@ -283,7 +304,16 @@ export class MapController {
       if (selection) this.onSelection(selection);
     });
     this.map.on('mousemove', (event) => {
-      this.map.getCanvas().style.cursor = findClickable(event.point) ? 'pointer' : '';
+      if (event.originalEvent.buttons !== 0) {
+        this.onHover?.(undefined);
+        return;
+      }
+      const hovered = findClickable(event.point);
+      this.map.getCanvas().style.cursor = hovered ? 'pointer' : '';
+      this.onHover?.(hovered ? { selection: hovered, x: event.originalEvent.clientX, y: event.originalEvent.clientY } : undefined);
+    });
+    this.map.getCanvas().addEventListener('mouseleave', () => {
+      this.onHover?.(undefined);
     });
   }
 
@@ -301,6 +331,7 @@ export class MapController {
     if (name === 'pois' || name === 'metro_stations') {
       (this.map.getSource('annotations') as GeoJSONSource | undefined)?.setData(createPointAnnotations(this.datasets));
     }
+    if (this.activeSelection) this.syncSelectionHighlight();
     this.applyRenderingState();
     if (shouldRefitOverview) this.fitInitialBounds();
   }
@@ -308,6 +339,54 @@ export class MapController {
   setSelectedId(id: string | undefined): void {
     this.selectedId = id;
     this.applyRenderingState();
+  }
+
+  setSelectionHighlight(selection: MapSelection | undefined): void {
+    this.activeSelection = selection;
+    this.syncSelectionHighlight();
+  }
+
+  private syncSelectionHighlight(): void {
+    const source = this.map.getSource('selection-highlight') as GeoJSONSource | undefined;
+    if (!source) return;
+    source.setData(buildSelectionHighlight(this.activeSelection, this.datasets));
+  }
+
+  setLens(lensId: MapLensId): void {
+    this.activeLens = lensId;
+    if (lensId !== 'buildings') this.activeHeightBand = undefined;
+    this.applyLensVisuals();
+    this.applyRenderingState();
+  }
+
+  setHeightBandFilter(bandId: string | undefined): void {
+    this.activeHeightBand = bandId;
+    this.applyRenderingState();
+  }
+
+  private applyLensVisuals(): void {
+    if (!this.map.isStyleLoaded()) return;
+    const isTransit = this.activeLens === 'transit';
+    const isBuildings = this.activeLens === 'buildings';
+    const isDistricts = this.activeLens === 'districts';
+
+    if (this.map.getLayer('painted-terrain')) {
+      this.map.setPaintProperty('painted-terrain', 'raster-saturation', isTransit ? -0.58 : isBuildings ? -0.35 : isDistricts ? -0.45 : 0);
+      this.map.setPaintProperty('painted-terrain', 'raster-brightness-max', isTransit ? 0.68 : isBuildings ? 0.8 : isDistricts ? 0.78 : 1);
+    }
+    if (this.map.getLayer('district-lens-fill')) {
+      this.map.setPaintProperty('district-lens-fill', 'fill-opacity', isDistricts ? 0.54 : 0);
+    }
+    if (this.map.getLayer('district-boundaries')) {
+      this.map.setPaintProperty('district-boundaries', 'line-width', isDistricts ? 2.2 : 1.2);
+      this.map.setPaintProperty('district-boundaries', 'line-opacity', isDistricts ? 0.92 : 0.5);
+    }
+    if (this.map.getLayer('metro-lines')) {
+      this.map.setPaintProperty('metro-lines', 'line-opacity', isTransit ? 1 : metroOpacity);
+    }
+    if (this.map.getLayer('metro-casing')) {
+      this.map.setPaintProperty('metro-casing', 'line-opacity', isTransit ? 1 : metroOpacity);
+    }
   }
 
   setShowAllBuildings(enabled: boolean): void {
@@ -329,7 +408,10 @@ export class MapController {
       },
       setSelectedBuildingColor: (layerId, selectedId) => {
         if (this.map.getLayer(layerId)) {
-          const color = buildingColorExpression(selectedId);
+          const baseColor = buildingColorExpression(selectedId);
+          const color = this.activeLens === 'buildings' && this.activeHeightBand
+            ? buildingBandColorExpression(this.activeHeightBand, selectedId, baseColor)
+            : baseColor;
           this.map.setPaintProperty(layerId, layerId === 'buildings-flat' ? 'fill-color' : 'fill-extrusion-color', color);
         }
       },
@@ -407,9 +489,28 @@ export class MapController {
     this.map.easeTo({ zoom: this.map.getZoom() + delta, duration: 240 });
   }
 
+  panBy(dx: number, dy: number): void {
+    this.isOverview = false;
+    this.map.panBy([dx, dy], { duration: 180 });
+  }
+
   resetNorth(): void {
     this.isOverview = false;
     this.map.easeTo({ bearing: 0, duration: 350 });
+  }
+
+  resetOverview(): void {
+    const bounds = overviewBounds(this.datasets.districts);
+    if (!bounds) return;
+    this.map.fitBounds(bounds, {
+      padding: this.getCameraPadding(),
+      absolutePadding: true,
+      pitch: 0,
+      bearing: 0,
+      duration: 650,
+      essential: true,
+    });
+    this.isOverview = true;
   }
 
   focus(selection: MapSelection, initial = false): void {

@@ -150,10 +150,11 @@ function badge(id: string, source: string, image: string | ExpressionSpecificati
   return { id, type: 'symbol', source, minzoom: 7.2, layout: { 'icon-image': image, 'icon-text-fit': 'both', 'icon-text-fit-padding': [2, 5, 2, 5], 'text-field': text, 'text-font': ['DejaVu Sans'], 'text-size': 10.5, 'symbol-spacing': 160, 'text-allow-overlap': false, 'icon-allow-overlap': false, 'text-padding': 5, 'icon-padding': 5 }, paint: { 'text-color': '#ffffff' } };
 }
 
-function plate(id: string, filter: ExpressionSpecification, minzoom: number): LayerSpecification {
+function plate(id: string, filter: ExpressionSpecification, minzoom: number, overview = false): LayerSpecification {
+  const prefix = overview ? 'overview-plate-' : 'place-plate-';
   return { id, type: 'symbol', source: 'annotations', minzoom, filter,
-    layout: { 'icon-image': ['concat', 'place-plate-', ['get', 'plateKind']], 'icon-text-fit': 'both', 'icon-text-fit-padding': [4, 12, 5, 12], 'icon-anchor': 'bottom',
-      'text-field': ['get', 'name'], 'text-font': ['DejaVu Sans'], 'text-size': 11, 'text-anchor': 'bottom', 'text-offset': [0, -1.15],
+    layout: { 'icon-image': ['concat', prefix, ['get', 'plateKind']], 'icon-text-fit': 'both', 'icon-text-fit-padding': [4, 12, 5, 12], 'icon-anchor': 'bottom',
+      'text-field': ['get', 'name'], 'text-font': ['DejaVu Sans'], 'text-size': overview ? 11.5 : 11, 'text-anchor': 'bottom', 'text-offset': [0, -1.15],
       'symbol-sort-key': ['get', 'priority'], 'text-allow-overlap': false, 'icon-allow-overlap': false, 'text-padding': 4, 'icon-padding': 4 },
     paint: { 'text-color': '#f4ead1' } };
 }
@@ -182,7 +183,7 @@ export function labelLayers(): LayerSpecification[] {
     plate('other-place-labels', placeFilter(['all', ['!=', ['get', 'category'], '地标'], ['!=', ['get', 'category'], '公园'], ['!=', ['get', 'category'], '街道'], ['!', important]]), 12.5),
     station(false), station(true), metroBadges,
     plate('landmark-labels', placeFilter(['all', ['==', ['get', 'category'], '地标'], ['!', important]]), 11),
-    plate('overview-place-labels', placeFilter(important), 7.2),
+    plate('overview-place-labels', placeFilter(important), 7.2, true),
   ];
 }
 
