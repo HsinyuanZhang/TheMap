@@ -138,6 +138,7 @@ function sourceData(datasets: MapDatasets, paintTiles: string[]): StyleSpecifica
     surface: { type: 'geojson', data: datasets.surface },
     terrain: { type: 'geojson', data: datasets.terrain },
     annotations: { type: 'geojson', data: createPointAnnotations(datasets) },
+    'selection-highlight': { type: 'geojson', data: collection([]) },
     ...overlaySources(datasets),
   } as StyleSpecification['sources'];
 }
@@ -162,6 +163,17 @@ export function createMapStyle(baseUrl: string, datasets: MapDatasets, selectedI
       },
     },
     {
+      id: 'district-lens-fill', type: 'fill', source: 'districts', minzoom: MAP_ZOOM.region,
+      paint: {
+        'fill-color': ['match', ['get', 'id'],
+          'manhattan', '#d49a57', 'central', '#789bb8', 'beverly', '#7ea670',
+          'st-germain', '#b88392', 'harlem', '#c4a662', 'uptown', '#8f88b8',
+          'brooklyn', '#c77f6b', 'fleet-port', '#6b9496', 'reserve', '#6a8f63',
+          '#9b937a'],
+        'fill-opacity': 0,
+      },
+    },
+    {
       id: 'district-boundaries', type: 'line', source: 'districts', minzoom: MAP_ZOOM.region,
       paint: { 'line-color': MAP_PALETTE.districtBoundary, 'line-width': 1.2, 'line-opacity': 0.5, 'line-dasharray': [3, 2] },
     },
@@ -169,6 +181,32 @@ export function createMapStyle(baseUrl: string, datasets: MapDatasets, selectedI
       id: 'reserve-city-boundaries', type: 'line', source: 'boundaries', minzoom: MAP_ZOOM.region,
       filter: ['==', ['get', 'kind'], 'reserve-city'],
       paint: { 'line-color': MAP_PALETTE.boundary, 'line-width': 1.4, 'line-opacity': 0.6, 'line-dasharray': [3, 2] },
+    },
+    {
+      id: 'selected-region-fill', type: 'fill', source: 'selection-highlight',
+      filter: ['==', ['get', 'highlightKind'], 'region'],
+      paint: { 'fill-color': '#ecd08e', 'fill-opacity': 0.14 },
+    },
+    {
+      id: 'selected-region-glow', type: 'line', source: 'selection-highlight',
+      filter: ['==', ['get', 'highlightKind'], 'region'],
+      paint: { 'line-color': '#c9a45c', 'line-width': 6, 'line-opacity': 0.28, 'line-blur': 3 },
+    },
+    {
+      id: 'selected-region-outline', type: 'line', source: 'selection-highlight',
+      filter: ['==', ['get', 'highlightKind'], 'region'],
+      paint: { 'line-color': '#f5dc96', 'line-width': 2.2, 'line-opacity': 0.95 },
+    },
+    {
+      id: 'selected-line-glow', type: 'line', source: 'selection-highlight',
+      filter: ['==', ['get', 'highlightKind'], 'line'],
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#f5dc96', 'line-width': 11, 'line-opacity': 0.45, 'line-blur': 4 },
+    },
+    {
+      id: 'selected-point-ring', type: 'circle', source: 'selection-highlight',
+      filter: ['==', ['get', 'highlightKind'], 'point'],
+      paint: { 'circle-radius': 13, 'circle-color': 'rgba(236, 208, 142, 0.22)', 'circle-stroke-color': '#f5dc96', 'circle-stroke-width': 2.2 },
     },
 
     {

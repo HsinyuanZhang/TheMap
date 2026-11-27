@@ -3,8 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#eef2f3" />
-    <meta name="description" content="可缩放、可点击的摩纳哥地图。" />
+    <meta name="theme-color" content="#131e2a" />
+    <meta name="description" content="可缩放、可点击的摩纳哥特别行政区交互式图志地图。" />
     <link rel="icon" type="image/svg+xml" href="/icons/favicon.svg" />
     <title>摩纳哥地图</title>
   </head>
@@ -12,59 +12,148 @@
     <div id="app">
       <main class="map-shell" aria-label="摩纳哥地图">
         <div id="map" class="map-canvas" aria-label="可缩放、可平移和倾斜的交互地图"></div>
+        <div class="map-vignette" aria-hidden="true"></div>
+        <div id="map-tooltip" class="map-tooltip" role="tooltip" hidden></div>
         <div id="map-error" class="map-error" role="alert" hidden></div>
-        <div id="map-data-notice" class="map-data-notice" role="status" aria-live="polite" hidden>
+        <div id="map-data-notice" class="map-data-notice atlas-panel" role="status" aria-live="polite" hidden>
           <span id="map-data-message"></span>
-          <button id="retry-map-data" class="control-button secondary" type="button">重试</button>
+          <button id="retry-map-data" class="atlas-btn" type="button">重试</button>
         </div>
 
-        <header class="map-toolbar">
-          <a class="brand" href="/" aria-label="返回地图首页">
+        <header class="map-toolbar" id="topbar">
+          <a id="brand-home" class="brand" href="/" aria-label="返回摩纳哥地图总览">
             <span class="brand-mark" aria-hidden="true">M</span>
-            <span>摩纳哥地图</span>
+            <span class="brand-text">摩纳哥地图</span>
           </a>
-          <div class="toolbar-actions" aria-label="地图视图控制">
-            <button id="zoom-out" class="control-button compact" type="button" aria-label="缩小地图">−</button>
-            <button id="zoom-in" class="control-button compact" type="button" aria-label="放大地图">＋</button>
-            <button id="north-up" class="control-button north-button" type="button" aria-label="恢复北向上">北向上</button>
-            <button id="view-toggle" class="control-button" type="button" aria-pressed="false">切换到 3D</button>
+
+          <div class="search-box" role="search">
+            <span id="search-icon" class="search-ic" aria-hidden="true"></span>
+            <input
+              id="search-input"
+              type="search"
+              placeholder="搜索地点、城区、地铁站…"
+              autocomplete="off"
+              spellcheck="false"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded="false"
+              aria-controls="search-results"
+              aria-label="搜索地点、城区或地铁站（按 / 或 Ctrl+K）"
+            />
+            <kbd class="search-kbd" aria-hidden="true">/</kbd>
+          </div>
+
+          <div class="toolbar-spacer"></div>
+
+          <div class="toolbar-actions" aria-label="地图视图与工具">
+            <button id="north-up" class="atlas-btn north-button" type="button" aria-label="恢复北向上" title="恢复北向上"></button>
+            <button id="view-toggle" class="atlas-btn" type="button" aria-pressed="false" title="切换 2D / 3D 视角（快捷键 3）"></button>
+            <button id="open-almanac" class="atlas-btn" type="button" aria-haspopup="dialog" title="打开摩纳哥图志与全城索引"></button>
+            <button id="open-share" class="atlas-btn" type="button" aria-haspopup="dialog" aria-expanded="false" title="分享链接或导出视图海报 PNG"></button>
+            <button id="open-help" class="atlas-btn icon-only" type="button" aria-haspopup="dialog" aria-label="操作与快捷键帮助" title="操作帮助（?）"></button>
           </div>
         </header>
 
-        <nav class="layer-toolbar" aria-label="地图图层">
-          <label><input type="checkbox" data-layer-toggle="metro" checked /> 地铁</label>
-          <label><input type="checkbox" data-layer-toggle="roads" checked /> 公路</label>
-          <label><input type="checkbox" data-layer-toggle="buildings" checked /> 建筑</label>
-          <label><input type="checkbox" data-layer-toggle="places" checked /> 地点</label>
-          <label><input id="all-buildings-3d" type="checkbox" /> 全部楼房立体</label>
-        </nav>
+        <div id="search-results" class="search-results atlas-panel" role="listbox" aria-label="搜索结果" hidden></div>
 
-        <details class="map-legend" aria-label="地图图例">
-          <summary>地图图例</summary>
-          <ul id="map-legend-items"></ul>
-        </details>
+        <div id="share-popover" class="share-popover atlas-panel" role="dialog" aria-label="分享当前视图" hidden>
+          <div class="popover-head">分享此视图</div>
+          <button id="share-copy-url" class="popover-action" type="button"></button>
+          <button id="share-download-png" class="popover-action" type="button"></button>
+          <p id="share-pop-status" class="popover-status" aria-live="polite"></p>
+        </div>
 
-        <aside id="place-panel" class="place-panel is-open" aria-label="地点介绍" aria-live="polite">
+        <div class="zoom-cluster atlas-panel" aria-label="地图缩放控制">
+          <button id="zoom-in" class="zoom-btn" type="button" aria-label="放大地图" title="放大（+）">＋</button>
+          <button id="zoom-out" class="zoom-btn" type="button" aria-label="缩小地图" title="缩小（-）">−</button>
+          <button id="reset-overview" class="zoom-btn" type="button" aria-label="重置总览视角" title="返回摩纳哥全貌（R）"></button>
+        </div>
+
+        <div id="atlas-dock" class="atlas-dock">
+          <nav id="layer-popover" class="layer-toolbar atlas-panel" aria-label="地图图层" hidden>
+            <div class="popover-head">图层显示</div>
+            <label class="layer-switch"><input type="checkbox" data-layer-toggle="metro" checked /><span class="layer-label">地铁线路与车站</span><span class="switch-track" aria-hidden="true"></span></label>
+            <label class="layer-switch"><input type="checkbox" data-layer-toggle="roads" checked /><span class="layer-label">公路与高速</span><span class="switch-track" aria-hidden="true"></span></label>
+            <label class="layer-switch"><input type="checkbox" data-layer-toggle="buildings" checked /><span class="layer-label">街区与建筑</span><span class="switch-track" aria-hidden="true"></span></label>
+            <label class="layer-switch"><input type="checkbox" data-layer-toggle="places" checked /><span class="layer-label">地标铭牌</span><span class="switch-track" aria-hidden="true"></span></label>
+            <label class="layer-switch"><input id="all-buildings-3d" type="checkbox" /><span class="layer-label">全部楼房立体</span><span class="switch-track" aria-hidden="true"></span></label>
+          </nav>
+
+          <details id="map-legend" class="map-legend atlas-panel" aria-label="地图图例">
+            <summary id="map-legend-summary">地图图例</summary>
+            <div id="map-legend-body" class="legend-body">
+              <p id="lens-legend-desc" class="legend-desc" hidden></p>
+              <div id="lens-legend-interactive" class="legend-interactive" hidden></div>
+              <ul id="map-legend-items"></ul>
+            </div>
+          </details>
+
+          <div id="lens-dock" class="lens-dock atlas-panel" role="toolbar" aria-label="地图视图与图层">
+            <div id="lens-buttons" class="lens-buttons"></div>
+            <div class="dock-divider" aria-hidden="true"></div>
+            <button id="layers-toggle" class="dock-btn layers-btn" type="button" aria-expanded="false" aria-controls="layer-popover"></button>
+          </div>
+        </div>
+
+        <aside id="place-panel" class="place-panel atlas-panel" aria-label="地点介绍" aria-live="polite" aria-hidden="true" inert>
+          <span id="panel-stripe" class="panel-stripe" aria-hidden="true"></span>
           <div class="panel-grabber" aria-hidden="true"></div>
           <div class="panel-header">
             <div class="panel-heading">
-              <p id="panel-kicker" class="panel-kicker">城市简介</p>
+              <p id="panel-kicker" class="panel-kicker">城市图志</p>
               <h1 id="panel-title">摩纳哥</h1>
             </div>
             <button id="close-panel" class="icon-button" type="button" aria-label="关闭介绍面板">×</button>
           </div>
-          <div id="panel-meta" class="panel-meta" hidden></div>
-          <div id="station-meta" class="station-meta" hidden></div>
-          <div id="panel-body" class="panel-body"></div>
+          <div class="panel-scroll">
+            <div id="panel-meta" class="panel-meta" hidden></div>
+            <div id="station-meta" class="station-meta" hidden></div>
+            <div id="panel-body" class="panel-body"></div>
+            <div id="panel-related" class="panel-related" hidden></div>
+          </div>
           <div id="share-area" class="share-area" hidden>
-            <label for="share-link">分享链接</label>
+            <label for="share-link">地点直达链接</label>
             <div class="share-row">
               <input id="share-link" type="url" readonly />
-              <button id="copy-link" class="control-button secondary" type="button">复制</button>
+              <button id="copy-link" class="atlas-btn secondary" type="button">复制</button>
             </div>
             <p id="copy-status" class="copy-status" aria-live="polite"></p>
           </div>
         </aside>
+
+        <div id="almanac-modal" class="atlas-modal" hidden>
+          <div class="almanac-card atlas-panel" role="dialog" aria-modal="true" aria-label="摩纳哥图志">
+            <button class="icon-button modal-close" type="button" data-close-modal aria-label="关闭图志">×</button>
+            <nav id="almanac-nav" class="almanac-nav" aria-label="图志目录"></nav>
+            <article id="almanac-body" class="almanac-body"></article>
+          </div>
+        </div>
+
+        <div id="help-modal" class="atlas-modal" hidden>
+          <div class="help-card atlas-panel" role="dialog" aria-modal="true" aria-labelledby="help-title">
+            <button class="icon-button modal-close" type="button" data-close-modal aria-label="关闭帮助">×</button>
+            <h2 id="help-title">操作与快捷键</h2>
+            <div class="help-cols">
+              <section>
+                <h3>视角移动</h3>
+                <div class="help-row"><span class="help-keys"><kbd>拖动</kbd> <kbd>WASD</kbd> <kbd>←↑→↓</kbd></span><span>平移地图</span></div>
+                <div class="help-row"><span class="help-keys"><kbd>滚轮</kbd> <kbd>+</kbd> <kbd>−</kbd></span><span>缩放视野</span></div>
+                <div class="help-row"><span class="help-keys"><kbd>右键拖动</kbd> <kbd>3</kbd></span><span>旋转与切换 3D 俯仰</span></div>
+                <div class="help-row"><span class="help-keys"><kbd>R</kbd></span><span>重置摩纳哥总览视角</span></div>
+              </section>
+              <section>
+                <h3>探索与视图</h3>
+                <div class="help-row"><span class="help-keys"><kbd>点击地图</kbd></span><span>查看城区、地标或地铁站</span></div>
+                <div class="help-row"><span class="help-keys"><kbd>/</kbd> <kbd>Ctrl K</kbd></span><span>搜索地点、城区与车站</span></div>
+                <div class="help-row"><span class="help-keys"><kbd>L</kbd> <kbd>Shift L</kbd></span><span>切换视图滤镜（图志/轨交/建筑/区划）</span></div>
+                <div class="help-row"><span class="help-keys"><kbd>?</kbd> <kbd>Esc</kbd></span><span>打开帮助 / 逐层关闭浮窗</span></div>
+              </section>
+            </div>
+            <p class="help-foot">所有地形纹理、文字、字形与矢量数据均随站点本地提供，不请求任何第三方底图或统计服务。</p>
+          </div>
+        </div>
+
+        <div id="toast" class="atlas-toast" role="status" aria-live="polite" hidden></div>
       </main>
     </div>
     <script type="module" src="/src/main.ts"></script>

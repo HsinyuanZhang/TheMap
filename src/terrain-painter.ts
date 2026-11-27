@@ -92,15 +92,16 @@ export function paintPixels(world: WorldModel, view: PaintView, bleed: number = 
       const coast = world.coastDistance(x, y), shallow = 1 - smooth(coast / 5);
       color = blend(color, [52, 122, 168], shallow);
       color = blend(color, [128, 187, 192], smooth(1 - coast / 0.5) * 0.68);
-      texture = (noise(x * 0.28, y * 0.28) - 0.5) * 8 + Math.sin(y * 17 + noise(x * 0.4, y * 0.4) * 2) * 0.7 * smooth((scale - 5) / 18);
-      color = color.map(v => v * (1 - Math.min(0.06, Math.hypot(x - 19, y - 17.5) / 650)));
+      const swell = Math.sin(y * 1.45 + Math.sin(x * 0.35) * 1.8) * 1.35 * smooth(coast / 4);
+      texture = (noise(x * 0.28, y * 0.28) - 0.5) * 8 + swell + Math.sin(y * 17 + noise(x * 0.4, y * 0.4) * 2) * 0.7 * smooth((scale - 5) / 18);
+      color = color.map(v => v * (1 - Math.min(0.08, Math.hypot(x - 19, y - 17.5) / 560)));
     } else {
       const step = Math.max(0.025, footprint * 0.6);
       const elevation = (a: number, b: number): number => world.shadingElevationAt(a, b, sample.district);
       const ex = (elevation(x + step, y) - elevation(x - step, y)) * 7 / (step * 2000);
       const ey = (elevation(x, y + step) - elevation(x, y - step)) * 7 / (step * 2000);
       const illumination = (-ex * MAP_LIGHT.east * lightSide - ey * MAP_LIGHT.north * lightSide + lightUp) / Math.hypot(ex, ey, 1);
-      const shade = sample.surface === 'foreign' ? 0.68 + 0.64 * illumination : 0.82 + 0.35 * illumination;
+      const shade = sample.surface === 'foreign' ? 0.58 + 0.56 * illumination : 0.82 + 0.35 * illumination;
       if (sample.surface === 'wood') {
         const mottle = noise(x * 2.5, y * 2.5) * 0.35 + noise(x * 9, y * 9) * 0.65 * detail;
         color = blend([30, 67, 39], [103, 132, 57], mottle);
@@ -112,7 +113,7 @@ export function paintPixels(world: WorldModel, view: PaintView, bleed: number = 
         texture += (stripeCoverage(furrow, 0.027, 0.005, footprint) - 0.005 / 0.027) * 25;
         color = blend(color, [85, 107, 56], clamp((0.009 - sample.fieldEdge) * scale + 0.5) * 0.72);
       }
-      if (sample.surface === 'foreign') color = sample.district === 'ottoman' ? [150, 133, 98] : [79, 97, 77];
+      if (sample.surface === 'foreign') color = sample.district === 'ottoman' ? [126, 113, 86] : [69, 86, 70];
       if (sample.surface === 'military') color = blend([134, 151, 134], [174, 183, 157], noise(x * 0.8, y * 0.8) * 0.7 + noise(x * 3.2, y * 3.2) * 0.3);
       if (sample.surface === 'lowdensity') color = blend([199, 190, 169], color, 0.2 + 0.8 * smooth(world.urbanEdgeDistance(x, y) / 0.65));
       if (['lowrise', 'midrise', 'highrise', 'town'].includes(sample.surface)) {
