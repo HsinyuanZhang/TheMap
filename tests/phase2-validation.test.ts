@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { hasGroundFootprintAtBidTop, isNumericBuildingKey } from "../data/phase3-invariants";
 import {
   assertAreaCoverage,
   assertFinalTierTop,
@@ -66,4 +67,23 @@ test("Manhattan bid selection excludes Uptown landmarks with the same kind", () 
 
 test("label validation rejects a missing area label", () => {
   assert.throws(() => assertLabelCoverage(["district-a", "district-b"], ["district-a"]), /exactly one label/);
+});
+
+test("label validation allows the reserve's two stable labels", () => {
+  assert.doesNotThrow(() => assertLabelCoverage(["district-a", "reserve", "reserve"], ["reserve", "district-a", "reserve"]));
+  assert.throws(() => assertLabelCoverage(["district-a", "reserve", "reserve"], ["district-a", "reserve"]), /exactly one label/);
+});
+
+test("building key validation rejects strings and values outside the numeric binary domain", () => {
+  assert.equal(isNumericBuildingKey(0), true);
+  assert.equal(isNumericBuildingKey(1), true);
+  assert.equal(isNumericBuildingKey("1"), false);
+  assert.equal(isNumericBuildingKey(2), false);
+  assert.equal(isNumericBuildingKey(Number.NaN), false);
+});
+
+test("building validation rejects missing or incomplete base=0 footprints", () => {
+  assert.equal(hasGroundFootprintAtBidTop([{ base: 0, top: 80 }, { base: 20, top: 80 }]), true);
+  assert.equal(hasGroundFootprintAtBidTop([{ base: 20, top: 80 }]), false);
+  assert.equal(hasGroundFootprintAtBidTop([{ base: 0, top: 20 }, { base: 20, top: 80 }]), false);
 });

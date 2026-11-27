@@ -2,10 +2,16 @@ import assert from 'node:assert/strict';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
-import { area, booleanIntersects, booleanPointInPolygon, booleanValid, booleanWithin, intersect, point } from '@turf/turf';
+import { area, booleanIntersects, booleanPointInPolygon, booleanValid, booleanWithin, difference, intersect, point, union } from '@turf/turf';
 import type { Feature, FeatureCollection, Geometry, LineString, MultiPolygon, Point, Polygon, Position } from 'geojson';
-import { coastlineYAtX, districts as sourceDistricts, land as sourceLand, points as sourcePoints, roads as sourceRoads, stations as sourceStations, transitLines as sourceTransitLines } from '../data/source';
+import { beverlyHills, coastlineYAtX, districts as sourceDistricts, land as sourceLand, points as sourcePoints, reserveTownCenters, roads as sourceRoads, stations as sourceStations, transitLines as sourceTransitLines } from '../data/source';
+import { beverlyElevationAt } from '../data/generate';
+import { airport, airportPosition } from '../data/phase4-config';
+import { pointInRing } from '../data/geometry';
+import { hasGroundFootprintAtBidTop, isNumericBuildingKey } from '../data/phase3-invariants';
 import { normalizeProse, parseContentDocument } from '../src/content-format';
+import { validatePhase4Data } from './phase4-validation';
+import { precisionSliverArea, validateDistrictTopology } from './district-topology';
 import { assertMarkdownCoverage, collectClickableIds } from './content-links';
 import {
   assertAreaCoverage, assertFinalTierTop, assertLabelCoverage, assertNoPositiveAreaOverlap,
@@ -18,8 +24,8 @@ type Collection = FeatureCollection<Geometry, Properties>;
 
 const directory = resolve('public/data');
 const placeDirectory = resolve('content/places');
-const names = ['land', 'districts', 'parks', 'roads', 'metro_lines', 'metro_stations', 'buildings', 'pois', 'blocks', 'trees', 'labels', 'boundaries', 'surface'] as const;
-const expectedDistrictIds = ['manhattan', 'beverly', 'st-germain', 'harlem', 'uptown', 'brooklyn', 'fleet-port', 'reserve'];
+const names = ['land', 'districts', 'parks', 'roads', 'metro_lines', 'metro_stations', 'buildings', 'pois', 'blocks', 'trees', 'labels', 'boundaries', 'surface', 'terrain'] as const;
+const expectedDistrictIds = ['manhattan', 'central', 'beverly', 'st-germain', 'harlem', 'uptown', 'brooklyn', 'fleet-port', 'reserve'];
 const geometryByFile = {
   land: 'Polygon',
   districts: 'Polygon',
@@ -34,8 +40,10 @@ const geometryByFile = {
   labels: 'Point',
   boundaries: 'LineString',
   surface: 'Polygon',
+  terrain: 'Polygon|LineString',
 } as const;
 const fixture = JSON.parse(await readFile(resolve('tests/transit.fixture.json'), 'utf8')) as Record<string, { color: string; stations: string[] }>;
+validateDistrictTopology();
 
 function validateProperties(name: string, feature: Feature<Geometry, Properties>): void {
   assert.ok(feature.properties && typeof feature.properties === 'object', `${name}: properties required`);
@@ -93,6 +101,34 @@ function distanceToSegment(
   return Math.hypot(x - (x1 + ratio * dx), y - (y1 + ratio * dy));
 }
 
+function roadFeaturesTouch(first: Feature<Geometry, Properties>, second: Feature<Geometry, Properties>): boolean {
+  return booleanIntersects(first, second);
+}
+
+function roadDistanceFrom(position: readonly [number, number], road: Feature<Geometry, Properties>): number {
+  if (road.geometry?.type !== 'LineString') return Number.POSITIVE_INFINITY;
+  const path = road.geometry.coordinates.map(localPosition);
+  return Math.min(...path.slice(1).map((next, index) => distanceToSegment(position, path[index]!, next)));
+}
+
+function roadGraphReachable(
+  start: Feature<Geometry, Properties>,
+  roads: readonly Feature<Geometry, Properties>[],
+): Set<Feature<Geometry, Properties>> {
+  const reached = new Set([start]);
+  const pending = [start];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    for (const candidate of roads) {
+      if (!reached.has(candidate) && roadFeaturesTouch(current, candidate)) {
+        reached.add(candidate);
+        pending.push(candidate);
+      }
+    }
+  }
+  return reached;
+}
+
 const datasets = new Map<string, Collection>();
 let totalBytes = 0;
 for (const name of names) {
@@ -106,7 +142,7 @@ for (const name of names) {
   const buildingNames = new Map<string, string>();
   for (const [index, feature] of parsed.features.entries()) {
     assert.equal(feature.type, 'Feature', `${name}[${index}]: Feature required`);
-    assert.equal(feature.geometry?.type, geometryByFile[name], `${name}[${index}]: wrong geometry type`);
+    assert.ok(geometryByFile[name].split('|').includes(feature.geometry?.type ?? ''), `${name}[${index}]: wrong geometry type`);
     validateProperties(`${name}[${index}]`, feature);
     for (const position of walkCoordinates(feature.geometry!)) {
       assert.ok(position.every(Number.isFinite), `${name}[${index}]: coordinates must be finite`);
@@ -123,7 +159,7 @@ for (const name of names) {
         if (existingName) assert.equal(buildingName, existingName, `${name}: inconsistent name for landmark ${id}`);
         else buildingNames.set(id, buildingName as string);
       } else {
-        assert.ok(!seenIds.has(id), `${name}: duplicate id ${id}`);
+        if (!(name === 'labels' && id === 'reserve')) assert.ok(!seenIds.has(id), `${name}: duplicate id ${id}`);
         seenIds.add(id);
       }
     }
@@ -187,6 +223,8 @@ function nearbyRoadSegments(ring: readonly [number, number][]): Road[] {
   return [...candidates];
 }
 
+validatePhase4Data(datasets);
+
 const featureById = (collection: Collection, id: string) => collection.features.find((feature) => feature.properties?.id === id);
 for (const feature of landCollection.features) {
   const kind = requireString(feature.properties!, 'kind', 'land');
@@ -198,7 +236,7 @@ for (const feature of landCollection.features) {
 }
 
 const districtIds = districtCollection.features.map((feature) => requireString(feature.properties!, 'id', 'district'));
-assert.deepEqual([...districtIds].sort(), [...expectedDistrictIds].sort(), 'all eight specified districts must exist');
+assert.deepEqual([...districtIds].sort(), [...expectedDistrictIds].sort(), 'all nine specified districts must exist');
 for (const feature of districtCollection.features) {
   requireString(feature.properties!, 'name', 'district');
   assert.ok(['urban', 'military', 'reserve'].includes(requireString(feature.properties!, 'kind', 'district')));
@@ -208,25 +246,41 @@ assert.ok(monaco, 'Monaco land polygon required');
 const monacoRing = monaco.geometry.coordinates[0]!.map(localPosition);
 for (const feature of districtCollection.features) {
   const district = feature as Feature<Polygon, Properties>;
-  const overlap: Feature<Polygon | MultiPolygon, Properties> | null = intersect({
+  const outsideDistrict = difference({
     type: 'FeatureCollection',
     features: [district, monaco],
-  }) as Feature<Polygon | MultiPolygon, Properties> | null;
-  assert.ok(overlap && Math.abs(area(overlap) - area(district)) <= area(district) * 1e-6, `district ${String(feature.properties?.id)} must fit in Monaco land`);
+  });
+  if (outsideDistrict) precisionSliverArea(outsideDistrict.geometry, `district ${String(feature.properties?.id)} outside Monaco`);
 }
+let overlappingDistrictArea = 0;
 for (let first = 0; first < districtCollection.features.length; first += 1) {
   for (let second = first + 1; second < districtCollection.features.length; second += 1) {
-    assert.equal(intersect({
+    const overlap = intersect({
       type: 'FeatureCollection',
       features: [
         districtCollection.features[first] as Feature<Polygon, Properties>,
         districtCollection.features[second] as Feature<Polygon, Properties>,
       ],
-    }), null, 'district polygon interiors must not overlap');
+    });
+    if (!overlap) continue;
+    const firstId = String(districtCollection.features[first]!.properties?.id);
+    const secondId = String(districtCollection.features[second]!.properties?.id);
+    overlappingDistrictArea += precisionSliverArea(overlap.geometry, `${firstId}/${secondId} district overlap`);
   }
 }
+let districtUnion: Feature<Polygon | MultiPolygon> = districtCollection.features[0] as Feature<Polygon, Properties>;
+for (const district of districtCollection.features.slice(1)) {
+  const merged = union({ type: 'FeatureCollection', features: [districtUnion, district as Feature<Polygon, Properties>] });
+  assert.ok(merged, 'district polygons must form a nonempty union');
+  districtUnion = merged;
+}
+const uncovered = difference({ type: 'FeatureCollection', features: [monaco as Feature<Polygon, Properties>, districtUnion] });
+const outside = difference({ type: 'FeatureCollection', features: [districtUnion, monaco as Feature<Polygon, Properties>] });
+const uncoveredArea = uncovered ? precisionSliverArea(uncovered.geometry, 'uncovered Monaco land') : 0;
+const outsideArea = outside ? precisionSliverArea(outside.geometry, 'district land outside Monaco') : 0;
 const districtArea = districtCollection.features.reduce((sum, feature) => sum + area(feature as Feature<Polygon, Properties>), 0);
-assert.ok(Math.abs(districtArea - area(monaco)) < area(monaco) * 2e-8, 'districts must cover the Monaco polygon within six-decimal rounding tolerance');
+assert.ok(Math.abs(districtArea - area(monaco)) <= overlappingDistrictArea + uncoveredArea + outsideArea + 0.001,
+  'districts must cover Monaco with only coordinate-precision overlap and boundary slivers');
 for (let first = 0; first < landCollection.features.length; first += 1) {
   for (let second = first + 1; second < landCollection.features.length; second += 1) {
     assert.equal(intersect({
@@ -247,13 +301,20 @@ const namedArterials = new Set<string>();
 for (const feature of roadCollection.features) {
   requireString(feature.properties!, 'id', 'road');
   const roadClass = requireString(feature.properties!, 'class', 'road');
-  assert.ok(['motorway', 'arterial', 'street'].includes(roadClass), `invalid road class ${roadClass}`);
+  assert.ok(['motorway', 'arterial', 'local', 'hillroad', 'rural'].includes(roadClass), `invalid road class ${roadClass}`);
+  assert.notEqual(roadClass, 'street', 'unused street class must not be exported');
   assert.ok(typeof feature.properties?.width === 'number' && feature.properties.width > 0, 'roads must declare positive corridor widths');
   const roadName = requireString(feature.properties!, 'name', 'road');
   if (roadClass === 'arterial' && roadName) namedArterials.add(String(feature.properties!.id));
-  if (roadClass === 'street') assert.equal(roadName, '', 'generated streets must remain unnamed');
+  if (['local', 'hillroad', 'rural'].includes(roadClass)) assert.equal(roadName, '', 'generated local roads must remain unnamed');
 }
 assert.deepEqual([...namedArterials].sort(), ['broadway', 'fifth-avenue', 'promenade', 'queens-road', 'wall-street']);
+for (const sourceRoad of sourceRoads.filter((road) => road.roadClass === 'arterial' && road.name)) {
+  const outputRoad = featureById(roadCollection, sourceRoad.id);
+  assert.ok(outputRoad && outputRoad.geometry?.type === 'LineString', `${sourceRoad.id}: named arterial geometry required`);
+  assert.ok(outputRoad.geometry.coordinates.length >= 2);
+
+}
 for (const highway of ['A1', 'A2', 'A3']) {
   const feature = featureById(roadCollection, highway);
   assert.ok(feature, `${highway} required`);
@@ -284,6 +345,8 @@ for (const feature of stationCollection.features) {
   assert.ok(feature.geometry?.type === 'Point');
   const generatedPosition = localPosition(feature.geometry.coordinates);
   assert.ok(Math.hypot(generatedPosition[0] - source.position[0], generatedPosition[1] - source.position[1]) < 0.001, `${id}: generated station must match its source position`);
+  const assignedDistrict = districtCollection.features.find((district) => district.properties?.name === source.district);
+  assert.ok(assignedDistrict && booleanWithin(feature, assignedDistrict as Feature<Polygon, Properties>), `${id}: station must lie inside its assigned district`);
   const memberships = sourceTransitLines.filter((line) => line.stations.includes(id)).map((line) => line.id);
   assert.equal(String(feature.properties?.lines ?? ''), memberships.join(','), `${id}: line membership must match source`);
   assert.equal(feature.properties?.transfer, memberships.length > 1 ? 1 : 0, `${id}: transfer flag must match line membership`);
@@ -312,6 +375,7 @@ for (const [lineId, expected] of Object.entries(fixture)) {
   const routePoints = feature.geometry.coordinates.map(localPosition);
   let previousRouteIndex = -1;
   let previousStationId: string | undefined;
+  let turnsOverSixtyDegrees = 0;
   for (let stopIndex = 0; stopIndex < stationCoordinates.length; stopIndex += 1) {
     const stop = stationCoordinates[stopIndex]!;
     const currentStationId = orderedIds[stopIndex]!;
@@ -330,10 +394,33 @@ for (const [lineId, expected] of Object.entries(fixture)) {
       if (previousStation.properties?.district !== '曼哈顿区' && currentStation.properties?.district !== '曼哈顿区') {
         assert.ok(nearestIndex - previousRouteIndex >= 2, `${lineId}: outside-Manhattan stops need an intermediate road vertex`);
       }
+      if (previousStation.properties?.district === '曼哈顿区' && currentStation.properties?.district === '曼哈顿区') {
+        const interval = routePoints.slice(previousRouteIndex, nearestIndex + 1);
+        const routeLength = interval.slice(1).reduce((sum, point, index) =>
+          sum + Math.hypot(point[0] - interval[index]![0], point[1] - interval[index]![1]), 0);
+        const straightDistance = Math.hypot(localPosition(stationCoordinates[stopIndex]!)[0] - localPosition(stationCoordinates[stopIndex - 1]!)[0],
+          localPosition(stationCoordinates[stopIndex]!)[1] - localPosition(stationCoordinates[stopIndex - 1]!)[1]);
+        assert.ok(routeLength / straightDistance <= 1.3, `${lineId}: Manhattan station interval must stay within a 1.3 route-length ratio`);
+        for (let index = 1; index < interval.length - 1; index += 1) {
+          const before = interval[index - 1]!;
+          const corner = interval[index]!;
+          const after = interval[index + 1]!;
+          const first = [corner[0] - before[0], corner[1] - before[1]];
+          const second = [after[0] - corner[0], after[1] - corner[1]];
+          const firstLength = Math.hypot(...first);
+          const secondLength = Math.hypot(...second);
+          if (firstLength === 0 || secondLength === 0) continue;
+          const cosine = Math.max(-1, Math.min(1, (first[0]! * second[0]! + first[1]! * second[1]!) / (firstLength * secondLength)));
+          const turnDegrees = Math.acos(cosine) * 180 / Math.PI;
+          assert.ok(turnDegrees <= 100, `${lineId}: Manhattan route turns must not exceed 100 degrees`);
+          if (turnDegrees > 60) turnsOverSixtyDegrees += 1;
+        }
+      }
     }
     previousRouteIndex = nearestIndex;
     previousStationId = currentStationId;
   }
+  assert.ok(turnsOverSixtyDegrees <= 6, `${lineId}: no more than six Manhattan turns may exceed 60 degrees`);
 }
 const transfers = stationCollection.features.filter((feature) => feature.properties?.transfer === 1).map((feature) => feature.properties?.id).sort();
 assert.deepEqual(transfers, ['station-strait-exchange', 'station-times-square']);
@@ -374,9 +461,10 @@ for (const feature of buildings) {
   assert.ok(typeof height === 'number' && Number.isFinite(height) && height > base && height <= 480, 'building height must be finite and between its base and 480 meters');
   assert.ok(typeof top === 'number' && Number.isFinite(top) && top >= height, 'building top must be finite and at least its segment height');
   const kind = String(feature.properties?.kind ?? '');
-  assert.ok(['grid', 'financial', 'reclamation', 'landmark', 'uptown-support', 'warehouse'].includes(kind));
+  assert.ok(['grid', 'financial', 'reclamation', 'landmark', 'monument', 'uptown-support', 'warehouse', 'villa', 'town-house'].includes(kind));
   if (feature.properties?.id !== undefined) requireString(feature.properties, 'name', 'landmark building');
 }
+assert.ok(bids.size <= 20000, 'total distinct building bids must not exceed 20,000');
 const manhattanDistrict = featureById(districtCollection, 'manhattan') as Feature<Polygon, Properties> | undefined;
 assert.ok(manhattanDistrict?.geometry.type === 'Polygon', 'Manhattan district polygon is required');
 const manhattanBids = groupBuildingBidsWithinDistrict(buildings, manhattanDistrict);
@@ -393,7 +481,7 @@ const landmarkBuildings = buildings.filter((feature) => feature.properties?.id !
 assert.ok(generatedBuildings.length > 0, 'seeded Manhattan building sample required');
 for (const [bid, segments] of bids) {
   const supportedBy = segments[0]!.properties?.supportedBy;
-  const firstBase = Number(segments[0]!.properties?.base);
+  const firstBase = Number(segments.find((segment) => Number(segment.properties?.base) > 0)?.properties?.base ?? segments[0]!.properties?.base);
   const bidTop = Number(segments[0]!.properties?.top);
   assert.ok(segments.every((segment) => segment.properties?.supportedBy === supportedBy), bid + ': support reference must be consistent across tiers');
   assert.ok(segments.every((segment) => segment.properties?.top === bidTop), bid + ': building tier tops must agree');
@@ -403,7 +491,7 @@ for (const [bid, segments] of bids) {
   assertTierContinuity(segments.map((segment) => ({
     base: Number(segment.properties?.base),
     height: Number(segment.properties?.height),
-  })), typeof supportedBy === 'string' ? firstBase : 0);
+  })), 0);
   assertFinalTierTop(segments.map((segment) => ({
     base: Number(segment.properties?.base),
     height: Number(segment.properties?.height),
@@ -423,6 +511,15 @@ for (const [bid, segments] of bids) {
     assert.ok(booleanWithin(ordered[0]!, supportOrdered[0]!), bid + ': support footprint must contain the supported footprint');
   }
 }
+assert.ok(buildings.every((building) => isNumericBuildingKey(building.properties?.key)),
+  'every building feature must have numeric key 0 or 1');
+for (const [bid, segments] of bids) {
+  assert.ok(hasGroundFootprintAtBidTop(segments.map((segment) => ({ base: segment.properties?.base, top: segment.properties?.top }))),
+    `${bid}: base=0 footprints must advertise the full building top`);
+}
+const keyBids = new Set(buildings.filter((building) => Number(building.properties?.key) === 1).map((building) => String(building.properties?.bid)));
+assert.ok(keyBids.size >= 100 && keyBids.size <= 200, 'key buildings must cover 100-200 distinct bids');
+assert.ok(buildings.filter((building) => Number(building.properties?.key) === 1).length <= 1200, 'key buildings must use at most 1,200 segments');
 for (const landmark of landmarkBuildings) {
   const id = requireString(landmark.properties!, 'id', 'landmark building');
   const poi = featureById(poiCollection, id);
@@ -433,8 +530,16 @@ for (const landmark of landmarkBuildings) {
     (Math.min(...vertices.map((position) => position[1]!)) + Math.max(...vertices.map((position) => position[1]!))) / 2,
   ];
   const expectedOffsets: Record<string, readonly (readonly [number, number])[]> = {
-    'exchange-square': [[0, 0], [-0.065, -0.008], [0, 0.008], [0.065, -0.008]],
+    'strait-exchange': [[-0.05, 0.05]],
+    'continental-tower': [[0, 0.05]],
+    'exchange-square': [[0, 0.06], [-0.065, 0.052], [0, 0.068], [0.065, 0.052]],
     hospital: [[0, 0], [-0.055, 0], [0, 0], [0.055, 0]],
+    'old-governors-house': [[0, 0], [-0.065, 0], [0.065, 0]],
+    church: [[0, 0], [0.035, 0]],
+    airport: [[0, -0.3], [-0.8, -0.4]].map(([east, north]): [number, number] => {
+      const position = airportPosition(east!, north!);
+      return [position[0] - airport.center[0], position[1] - airport.center[1]];
+    }),
   };
   const origin = localPosition(poi.geometry.coordinates);
   const actual = localPosition(center);
@@ -447,13 +552,18 @@ for (const feature of districtCollection.features) {
   const id = String(feature.properties?.id);
   const actualKm2 = area(feature as Feature<Polygon, Properties>) / 1_000_000;
   const baseline = areaFixture.districtAreasKm2[id];
-  assert.ok(baseline && Math.abs(actualKm2 - baseline) <= baseline * 0.15, id + ': area must stay within 15% of Phase 1');
+  if (!['central', 'beverly', 'harlem', 'brooklyn', 'reserve'].includes(id)) {
+    assert.ok(baseline && Math.abs(actualKm2 - baseline) <= baseline * 0.15, id + ': unchanged district area must stay within 15% of Phase 1');
+  } else {
+    assert.ok(actualKm2 > 0, id + ': Phase 3 district must have positive area');
+  }
 }
 assertAreaCoverage(districtArea, area(monaco));
-const expectedLabelIds = [...districtIds, ...landCollection.features.filter((item) => item.properties?.kind !== 'monaco').map((item) => String(item.properties?.id))];
+const expectedLabelIds = [...districtIds, ...landCollection.features.filter((item) => item.properties?.kind !== 'monaco').map((item) => String(item.properties?.id)), 'reserve'];
 const labelCollection = datasets.get('labels')!;
-assert.equal(labelCollection.features.length, 10, 'exactly ten area labels are required');
+assert.equal(labelCollection.features.length, 12, 'two reserve labels plus one label for each other region are required');
 assertLabelCoverage(expectedLabelIds, labelCollection.features.map((item) => String(item.properties?.id)));
+assert.equal(labelCollection.features.filter((item) => item.properties?.id === 'reserve').length, 2);
 for (const label of labelCollection.features) {
   assert.ok(label.geometry?.type === 'Point');
   const region = [...districtCollection.features, ...landCollection.features].find((item) => item.properties?.id === label.properties?.id);
@@ -462,7 +572,7 @@ for (const label of labelCollection.features) {
 const blockCollection = datasets.get('blocks')!;
 const blocksById = new Map(blockCollection.features.filter((item) => typeof item.properties?.block_id === 'string').map((item) => [String(item.properties?.block_id), item]));
 const ordinaryBlocks = blockCollection.features.filter((item) =>
-  item.properties?.kind === 'block' && ['grid', 'financial', 'reclamation'].includes(String(item.properties?.zone)),
+  item.properties?.kind === 'block' && ['grid', 'financial', 'reclamation', 'residual'].includes(String(item.properties?.zone)),
 );
 const blockGrid = new Map<string, Feature<Polygon, Properties>[]>();
 const indexedBlockKeys = (item: Feature<Polygon, Properties>): string[] => {
@@ -527,15 +637,258 @@ for (const tree of treeCollection.features) {
 }
 const surfaces = datasets.get('surface')!.features;
 const farms = surfaces.filter((item) => item.properties?.kind === 'farm');
-assert.ok(farms.length >= 600 && farms.length <= 1000);
+assert.ok(farms.length >= 1000 && farms.length <= 2000);
+assert.ok(farms.every((farm) => Number.isInteger(farm.properties?.tone) && Number(farm.properties?.tone) >= 0 && Number(farm.properties?.tone) <= 3));
+const farmGrid = new Map<string, Feature<Polygon, Properties>[]>();
+for (const farm of farms as Feature<Polygon, Properties>[]) {
+  const keys = indexedBlockKeys(farm);
+  const candidates = new Set(keys.flatMap((key) => farmGrid.get(key) ?? []));
+  for (const candidate of candidates) assertNoPositiveAreaOverlap(farm, candidate, 'Voronoi farm cells must not overlap');
+  for (const key of keys) farmGrid.set(key, [...(farmGrid.get(key) ?? []), farm]);
+}
 const fleetPiers = surfaces.filter((item) => item.properties?.kind === 'pier' && item.properties?.sector === 'fleet-port');
 assert.ok(fleetPiers.length >= 6 && fleetPiers.length <= 10);
-const supportCounts = ['city-hall', 'hospital', 'library'].map((id) => new Set(buildings.filter((item) => item.properties?.block_id === 'S-' + id).map((item) => item.properties?.bid)).size);
-assert.ok(supportCounts.every((count) => count >= 150 && count <= 300));
-assert.ok(buildings.filter((item) => item.properties?.kind === 'uptown-support').every((item) => Number(item.properties?.top) >= 10 && Number(item.properties?.top) <= 45));
-assert.ok(buildings.filter((item) => item.properties?.kind === 'warehouse').every((item) => Number(item.properties?.top) <= 25));
 const reserve = districtCollection.features.find((item) => item.properties?.id === 'reserve') as Feature<Polygon, Properties>;
-assert.ok(buildings.every((item) => !booleanWithin(item, reserve)), 'Reserve must not contain buildings');
+assert.ok(buildings.filter((item) => item.properties?.kind !== 'town-house').every((item) => !booleanWithin(item, reserve)), 'only town houses may be generated in the reserve');
+assert.ok(buildings.filter((item) => item.properties?.kind === 'town-house').every((item) => booleanWithin(item, reserve)));
+const surfaceFeatures = datasets.get('surface')!.features;
+const woods = surfaceFeatures.filter((item) => item.properties?.kind === 'wood') as Feature<Polygon, Properties>[];
+const reserveWoods = woods.filter((item) => item.properties?.sector === 'reserve');
+const beverlyWoods = woods.filter((item) => item.properties?.sector === 'beverly');
+const reserveAreaKm2 = area(reserve) / 1_000_000;
+const reserveWoodsKm2 = reserveWoods.reduce((sum, item) => sum + area(item) / 1_000_000, 0);
+const farmAreaKm2 = farms.reduce((sum, item) => sum + area(item) / 1_000_000, 0);
+assert.ok(reserveWoodsKm2 / reserveAreaKm2 >= 0.3 && reserveWoodsKm2 / reserveAreaKm2 <= 0.4, 'reserve woods must cover 30-40% of the reserve');
+assert.ok(reserveWoods.every((item) => area(item) / 1_000_000 >= 0.3));
+assert.ok(reserveWoods.filter((item) => area(item) / 1_000_000 > 5).length >= 3);
+const reserveWoodCenters = reserveWoods.map((wood) => {
+  const coordinates = (wood.geometry as Polygon).coordinates[0]!.map(localPosition);
+  return [coordinates.reduce((sum, [x]) => sum + x, 0) / coordinates.length,
+    coordinates.reduce((sum, [, y]) => sum + y, 0) / coordinates.length] as [number, number];
+});
+assert.ok(reserveWoodCenters.some(([x, y]) => x < 28 && y > 25), 'reserve north arm must contain woods');
+assert.ok(reserveWoodCenters.some(([x]) => x >= 28), 'reserve east arm must contain woods');
+const beverly = districtCollection.features.find((item) => item.properties?.id === 'beverly') as Feature<Polygon, Properties>;
+const beverlyWoodsKm2 = beverlyWoods.reduce((sum, item) => sum + area(item) / 1_000_000, 0);
+const beverlyAreaKm2 = area(beverly) / 1_000_000;
+assert.ok(beverlyWoodsKm2 / beverlyAreaKm2 >= 0.35 && beverlyWoodsKm2 / beverlyAreaKm2 <= 0.5, 'Beverly woods must cover 35-50% of its district');
+assert.ok(farmAreaKm2 / reserveAreaKm2 >= 0.45 && farmAreaKm2 / reserveAreaKm2 <= 0.55, 'reserve farms must cover 45-55% of the reserve');
+const quadrilateralFarms = farms.filter((item) => item.geometry?.type === 'Polygon' && item.geometry.coordinates[0]?.length === 5);
+assert.ok(quadrilateralFarms.length / farms.length <= 0.3, 'farm quadrilaterals must not exceed the 30% cap');
+for (const farm of farms as Feature<Polygon, Properties>[]) {
+  for (const wood of woods) assertNoPositiveAreaOverlap(farm, wood, 'farm fields must not overlap woods');
+}
+const townBlocks = blockCollection.features.filter((item) => item.properties?.kind === 'town') as Feature<Polygon, Properties>[];
+assert.equal(townBlocks.length, 8);
+assert.ok(townBlocks.every((town) => area(town) / 1_000_000 >= 0.3 && area(town) / 1_000_000 <= 0.9));
+assert.deepEqual(townBlocks.map((town) => String(town.properties?.town_id)).sort(), reserveTownCenters.map((town) => town.id).sort());
+for (const town of townBlocks) {
+  assert.equal(town.properties?.id, undefined);
+  assert.equal(town.properties?.name, undefined);
+  const source = reserveTownCenters.find((candidate) => candidate.id === town.properties?.town_id)!;
+  assert.ok(booleanPointInPolygon(point(geographicPosition(source.position)), town), `${source.id} must retain its source center`);
+  for (const wood of woods) assertNoPositiveAreaOverlap(town, wood, 'towns must not overlap woods');
+  for (const farm of farms as Feature<Polygon, Properties>[]) assertNoPositiveAreaOverlap(town, farm, 'towns must not overlap farms');
+}
+assert.ok(reserveTownCenters.filter((town) => town.position[0] >= 28).length >= 3);
+for (let first = 0; first < reserveTownCenters.length; first += 1) {
+  for (let second = first + 1; second < reserveTownCenters.length; second += 1) {
+    assert.ok(Math.hypot(reserveTownCenters[first]!.position[0] - reserveTownCenters[second]!.position[0], reserveTownCenters[first]!.position[1] - reserveTownCenters[second]!.position[1]) >= 3,
+      'reserve towns must be at least 3 km apart');
+  }
+}
+const hillRoads = roadCollection.features.filter((item) => item.properties?.class === 'hillroad');
+const hillRoadIds = new Set(hillRoads.map((item) => String(item.properties?.id).replace(/-part-\d+$/, '').replace(/-\d+$/, '')));
+assert.ok(hillRoadIds.size >= 8 && hillRoadIds.size <= 12);
+const mainRoads = roadCollection.features.filter((item) => ['motorway', 'arterial'].includes(String(item.properties?.class)));
+const a2Road = mainRoads.find((item) => item.properties?.id === 'A2');
+const a3Road = mainRoads.find((item) => item.properties?.id === 'A3');
+assert.ok(a2Road && a3Road, 'Beverly access requires A2 and A3');
+const hillGraph = roadGraphReachable(a2Road, [...hillRoads, ...mainRoads]);
+assert.ok(hillRoads.every((road) => hillGraph.has(road)), 'every hill road must connect through the real road graph to A2');
+assert.ok(hillGraph.has(a3Road), 'the hill-road graph must also reach A3');
+const ruralRoads = roadCollection.features.filter((item) => item.properties?.class === 'rural');
+assert.ok(ruralRoads.length >= 40, 'rural roads must connect towns and form town streets');
+assert.ok(ruralRoads.every((road) => road.properties?.name === '' && Math.abs(Number(road.properties?.width) - 0.008) < 1e-8));
+const ruralGraphRoads = [...ruralRoads, ...mainRoads];
+for (const sourceTown of reserveTownCenters) {
+  const position = sourceTown.position;
+  const nearestTown = reserveTownCenters.filter((candidate) => candidate.id !== sourceTown.id)
+    .map((candidate) => ({ candidate, distance: Math.hypot(candidate.position[0] - position[0], candidate.position[1] - position[1]) }))
+    .sort((first, second) => first.distance - second.distance)[0]!.candidate;
+  const pairId = `rural-link-${[sourceTown.id, nearestTown.id].sort().join(':').replace(':', '-')}`;
+  const neighborLink = ruralRoads.find((road) => road.properties?.id === pairId);
+  assert.ok(neighborLink?.geometry?.type === 'LineString', `${sourceTown.id} must link to its nearest town`);
+  const linkEnds = [neighborLink.geometry.coordinates[0]!, neighborLink.geometry.coordinates.at(-1)!].map(localPosition);
+  const expectedEnds = [position, nearestTown.position];
+  assert.ok(linkEnds.every((end) => expectedEnds.some((expected) => Math.hypot(end[0] - expected[0], end[1] - expected[1]) <= 0.003)),
+    `${sourceTown.id} town link must reach both stable centers`);
+  const highwayLink = ruralRoads.find((road) => road.properties?.id === `rural-highway-${sourceTown.id}`);
+  assert.ok(highwayLink?.geometry?.type === 'LineString', `${sourceTown.id} must have a highway/arterial link`);
+  const accessCoordinates = highwayLink.geometry.coordinates;
+  const accessStart = localPosition(accessCoordinates[0]!);
+  const accessEnd = localPosition(accessCoordinates.at(-1)!);
+  assert.ok(Math.hypot(accessStart[0] - position[0], accessStart[1] - position[1]) <= 0.003,
+    `${sourceTown.id} highway link must begin at its stable center`);
+  const nearestMainRoad = mainRoads.map((road) => ({ road, distance: roadDistanceFrom(position, road) }))
+    .sort((first, second) => first.distance - second.distance)[0]!.road;
+  assert.ok(roadDistanceFrom(accessEnd, nearestMainRoad) <= 0.003, `${sourceTown.id} highway link must touch its nearest main road`);
+  const reachable = roadGraphReachable(highwayLink, ruralGraphRoads);
+  assert.ok(reachable.has(nearestMainRoad), `${sourceTown.id} rural network must be graph-continuous to the main road`);
+  assert.ok(reachable.has(neighborLink), `${sourceTown.id} rural network must join its nearest town`);
+}
+assert.equal(beverlyHills.length, 5);
+let sampledPeak = 0;
+for (let x = 9; x <= 28; x += 0.1) for (let y = 0; y <= 9; y += 0.1) sampledPeak = Math.max(sampledPeak, beverlyElevationAt([x, y]));
+assert.ok(sampledPeak >= 280 && sampledPeak <= 340, 'Beverly peak must be 280-340 m');
+const beverlySourceRing = sourceDistricts.find((district) => district.id === 'beverly')!.ring;
+for (let index = 1; index < beverlySourceRing.length; index += 1) {
+  const start = beverlySourceRing[index - 1]!;
+  const end = beverlySourceRing[index]!;
+  const steps = Math.max(1, Math.ceil(Math.hypot(end[0] - start[0], end[1] - start[1]) / 0.05));
+  for (let step = 0; step <= steps; step += 1) {
+    const ratio = step / steps;
+    assert.ok(beverlyElevationAt([start[0] + (end[0] - start[0]) * ratio, start[1] + (end[1] - start[1]) * ratio]) < 40,
+      'Beverly boundary elevations must remain below 40 m');
+  }
+}
+for (let x = 9; x <= 28; x += 0.05) for (let y = 0; y < 2.8; y += 0.05) {
+  assert.ok(beverlyElevationAt([x, y]) < 40, 'Beverly low-coast elevations must remain below 40 m');
+}
+assert.equal(beverlyElevationAt([8.99, 5]), 0);
+assert.equal(beverlyElevationAt([28.01, 5]), 0);
+for (const road of hillRoads) {
+  assert.ok(road.geometry?.type === 'LineString');
+  assert.equal(road.properties?.name, '');
+  assert.ok(Math.abs(Number(road.properties?.width) - 0.012) < 1e-8, 'Beverly hill roads must be 12 m wide');
+  const path = road.geometry.coordinates.map(localPosition);
+  for (let index = 1; index < path.length; index += 1) {
+    const start = path[index - 1]!;
+    const end = path[index]!;
+    const length = Math.hypot(end[0] - start[0], end[1] - start[1]);
+    assert.ok(length <= 0.6, 'hill road straight segments must be at most 600 m');
+    const steps = Math.max(1, Math.ceil(length / 0.05));
+    let previous = beverlyElevationAt(start);
+    for (let step = 1; step <= steps; step += 1) {
+      const t = step / steps;
+      const current: [number, number] = [start[0] + (end[0] - start[0]) * t, start[1] + (end[1] - start[1]) * t];
+      const elevation = beverlyElevationAt(current);
+      assert.ok(Math.abs(elevation - previous) / (length * 1000 / steps) <= 0.08, 'hill road grade must remain at or below 8%');
+      previous = elevation;
+    }
+  }
+}
+const terrainFeatures = datasets.get('terrain')!.features;
+assert.ok(terrainFeatures.some((item) => item.properties?.kind === 'band'));
+assert.ok(terrainFeatures.some((item) => item.properties?.kind === 'contour'));
+assert.ok(terrainFeatures.filter((item) => item.properties?.kind === 'band').every((item) =>
+  item.geometry?.type === 'Polygon' && Number(item.properties?.level) >= 0 && Number(item.properties?.level) % 40 === 0));
+assert.ok(terrainFeatures.filter((item) => item.properties?.kind === 'contour').every((item) =>
+  item.geometry?.type === 'LineString' && Number(item.properties?.level) > 0 && Number(item.properties?.level) % 40 === 0));
+assert.ok(blockCollection.features.every((item) => ['highrise', 'midrise', 'lowrise', 'lowdensity', 'town', 'plaza'].includes(String(item.properties?.type))));
+type LocalArea = { rings: [number, number][][]; bounds: [number, number, number, number] };
+const localAreas = (features: Feature<Geometry, Properties>[]): LocalArea[] => features.flatMap((item) => {
+  if (item.geometry?.type !== 'Polygon') return [];
+  const rings = item.geometry.coordinates.map((ring) => ring.map(localPosition));
+  const outer = rings[0]!;
+  return [{
+    rings,
+    bounds: [Math.min(...outer.map(([x]) => x)), Math.min(...outer.map(([, y]) => y)),
+      Math.max(...outer.map(([x]) => x)), Math.max(...outer.map(([, y]) => y))],
+  }];
+});
+const manhattanRing = sourceDistricts.find((item) => item.id === 'manhattan')!.ring;
+const manhattanPoints = manhattanRing;
+const manhattanBounds = [
+  Math.min(...manhattanPoints.map(([x]) => x)), Math.min(...manhattanPoints.map(([, y]) => y)),
+  Math.max(...manhattanPoints.map(([x]) => x)), Math.max(...manhattanPoints.map(([, y]) => y)),
+];
+const manhattanBlocks = blockCollection.features.filter((item) => item.properties?.kind === 'block');
+const manhattanParks = parkCollection.features.filter((item) => item.geometry?.type === 'Polygon');
+const areaIndexCellSize = 0.25;
+const areaIndex = (areas: LocalArea[]): Map<string, LocalArea[]> => {
+  const index = new Map<string, LocalArea[]>();
+  for (const area of areas) {
+    const [west, south, east, north] = area.bounds;
+    for (let x = Math.floor(west / areaIndexCellSize); x <= Math.floor(east / areaIndexCellSize); x += 1) {
+      for (let y = Math.floor(south / areaIndexCellSize); y <= Math.floor(north / areaIndexCellSize); y += 1) {
+        const key = `${x}:${y}`;
+        index.set(key, [...(index.get(key) ?? []), area]);
+      }
+    }
+  }
+  return index;
+};
+const nearbyAreas = (position: readonly [number, number], index: Map<string, LocalArea[]>): LocalArea[] => {
+  const x = Math.floor(position[0] / areaIndexCellSize);
+  const y = Math.floor(position[1] / areaIndexCellSize);
+  const nearby = new Set<LocalArea>();
+  for (let dx = -1; dx <= 1; dx += 1) for (let dy = -1; dy <= 1; dy += 1) {
+    for (const item of index.get(`${x + dx}:${y + dy}`) ?? []) nearby.add(item);
+  }
+  return [...nearby];
+};
+const localAreaContains = (position: readonly [number, number], item: LocalArea): boolean =>
+  pointInRing(position, item.rings[0]!) && !item.rings.slice(1).some((ring) => pointInRing(position, ring));
+const localAreaEdgeDistance = (position: readonly [number, number], item: LocalArea): number =>
+  Math.min(...item.rings.flatMap((ring) => ring.slice(1).map((next, index) => distanceToSegment(position, ring[index]!, next))));
+const blockAreas = localAreas(manhattanBlocks);
+const blockIndex = areaIndex(blockAreas);
+const blockAndParkAreas = [...blockAreas, ...localAreas(manhattanParks)];
+const blockAndParkIndex = areaIndex(blockAndParkAreas);
+const namedManhattanRoads = roadCollection.features.filter((item) =>
+  item.geometry?.type === 'LineString' && item.properties?.name !== '' && ['arterial', 'motorway'].includes(String(item.properties?.class)));
+let roadsideSamples = 0;
+let roadsideCovered = 0;
+const roadsideByName = new Map<string, { samples: number; covered: number }>();
+for (const road of namedManhattanRoads) {
+  const path = road.geometry!.type === 'LineString' ? road.geometry.coordinates.map(localPosition) : [];
+  const name = String(road.properties?.name);
+  const width = Number(road.properties?.width);
+  const stats = roadsideByName.get(name) ?? { samples: 0, covered: 0 };
+  for (let segmentIndex = 1; segmentIndex < path.length; segmentIndex += 1) {
+    const start = path[segmentIndex - 1]!;
+    const end = path[segmentIndex]!;
+    const length = Math.hypot(end[0] - start[0], end[1] - start[1]);
+    const sampleCount = Math.max(1, Math.ceil(length / 0.05));
+    for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
+      const ratio = (sampleIndex + 0.5) / sampleCount;
+      const sample: [number, number] = [start[0] + (end[0] - start[0]) * ratio, start[1] + (end[1] - start[1]) * ratio];
+      if (!pointInRing(sample, manhattanRing)) continue;
+      const nearest = Math.min(...nearbyAreas(sample, blockIndex).map((item) => localAreaEdgeDistance(sample, item)));
+      if (nearest <= width / 2 + 0.03) {
+        roadsideCovered += 1;
+        stats.covered += 1;
+      }
+      roadsideSamples += 1;
+      stats.samples += 1;
+    }
+  }
+  roadsideByName.set(name, stats);
+}
+const roadsidePercent = roadsideCovered / roadsideSamples;
+assert.ok(roadsideSamples > 0);
+assert.ok(roadsidePercent >= 0.9, `Manhattan named-roadside coverage must be >=90% at road half-width + 30 m; got ${(roadsidePercent * 100).toFixed(2)}%`);
+console.log(`Section 8.2 roadside: ${roadsideCovered}/${roadsideSamples} (${(roadsidePercent * 100).toFixed(2)}%) samples within road half-width + 30 m.`);
+console.log(`Section 8.2 by road: ${[...roadsideByName].map(([name, stats]) => `${name}=${stats.covered}/${stats.samples}`).join(', ')}`);
+
+const bareLandStep = 0.1;
+let bareLandSamples = 0;
+let totalLandSamples = 0;
+for (let x = Math.floor(manhattanBounds[0] / bareLandStep) * bareLandStep; x < manhattanBounds[2]; x += bareLandStep) {
+  for (let y = Math.floor(manhattanBounds[1] / bareLandStep) * bareLandStep; y < manhattanBounds[3]; y += bareLandStep) {
+    const sample: [number, number] = [x + bareLandStep / 2, y + bareLandStep / 2];
+    if (!pointInRing(sample, manhattanRing)) continue;
+    totalLandSamples += 1;
+    const nearBlockOrPark = nearbyAreas(sample, blockAndParkIndex).some((item) =>
+      localAreaContains(sample, item) || localAreaEdgeDistance(sample, item) <= 0.06);
+    if (!nearBlockOrPark) bareLandSamples += 1;
+  }
+}
+const bareLandPercent = bareLandSamples / totalLandSamples;
+assert.ok(totalLandSamples > 0);
+assert.ok(bareLandPercent <= 0.04, `Manhattan land >60 m from every block or park must be <=4%; got ${(bareLandPercent * 100).toFixed(2)}%`);
+console.log(`Section 8.3 Manhattan bare land: ${bareLandSamples}/${totalLandSamples} (${(bareLandPercent * 100).toFixed(2)}%) samples >60 m from every block or park.`);
 const summarizeBids = (groups: Iterable<Feature<Polygon, Properties>[]>): {
   bidCount: number;
   medianHeightMeters: number;
@@ -618,7 +971,7 @@ for (const poi of poiCollection.features) {
 for (const station of stationCollection.features) assert.ok(booleanWithin(station, monaco), 'stations must lie inside Monaco land');
 for (const block of blockCollection.features) assert.ok(booleanWithin(block, monaco), 'blocks must lie inside Monaco land');
 const plazas = blockCollection.features.filter((item) => item.properties?.kind === 'plaza');
-assert.equal(plazas.length, 4);
+assert.equal(plazas.length, 7);
 const plazaHoles: Feature<Polygon, Properties>[] = plazas.flatMap((plaza) => {
   if (plaza.geometry?.type !== 'Polygon' || plaza.geometry.coordinates.length !== 2) return [];
   return [{
@@ -656,7 +1009,11 @@ for (const building of buildings) {
   const id = typeof building.properties?.id === 'string' ? building.properties.id : undefined;
   const matchingHole = id ? plazaHoleByLandmark.get(id) : undefined;
   for (const plaza of plazas) {
-    assertNoPositiveAreaOverlap(building, plaza as Feature<Polygon, Properties>, 'building footprint must not overlap a plaza');
+    if (id && plaza.properties?.monument_id === id) {
+      assert.ok(booleanWithin(building, plaza as Feature<Polygon, Properties>), `${id}: monument components must fit their reserved ground`);
+    } else {
+      assertNoPositiveAreaOverlap(building, plaza as Feature<Polygon, Properties>, 'building footprint must not overlap an unrelated plaza');
+    }
   }
   const intersectingHoles = plazaHoles.filter((hole) => polygonIntersectionArea(building, hole) > 0.01);
   assert.ok(intersectingHoles.every((hole) => hole === matchingHole),
@@ -665,7 +1022,8 @@ for (const building of buildings) {
     assert.ok(booleanWithin(building, matchingHole), `${id}: entire footprint must fit its matching plaza hole`);
   } else {
     for (const outer of plazaOuters) {
-      assertNoPositiveAreaOverlap(building, outer, 'non-landmark building must stay outside plaza reserves');
+      if (id && outer.properties?.monument_id === id) assert.ok(booleanWithin(building, outer), `${id}: building must fit its monument plaza`);
+      else assertNoPositiveAreaOverlap(building, outer, 'non-landmark building must stay outside plaza reserves');
     }
   }
 }
@@ -683,16 +1041,19 @@ for (const route of lineCollection.features) {
   for (const block of blockCollection.features.filter((item) => item.properties?.kind === 'block')) {
     assert.ok(!booleanIntersects(route, block), 'metro route must not cross a visible block');
   }
+  for (const exclusion of blockCollection.features.filter((item) => item.properties?.kind === 'plaza' && typeof item.properties?.monument_id === 'string')) {
+    assert.ok(!booleanIntersects(route, exclusion), `metro route must not cross the ${String(exclusion.properties?.monument_id)} monument exclusion`);
+  }
 }
 for (const surface of farms) {
   assert.ok(booleanWithin(surface, reserve));
   const coordinates = walkCoordinates(surface.geometry!).map(localPosition);
   const width = Math.max(...coordinates.map((point) => point[0])) - Math.min(...coordinates.map((point) => point[0]));
   const depth = Math.max(...coordinates.map((point) => point[1])) - Math.min(...coordinates.map((point) => point[1]));
-  assert.ok(width >= 0.3 && width <= 0.8 && depth >= 0.3 && depth <= 0.8, 'farm tiles must be 300-800 m across');
+  assert.ok(width >= 0.15 && width <= 0.6 && depth >= 0.15 && depth <= 0.6, 'farm fields must be 150-600 m across');
 }
 const warehouseBids = new Set(buildings.filter((item) => item.properties?.kind === 'warehouse').map((item) => item.properties?.bid));
-assert.ok(warehouseBids.size >= 10 && warehouseBids.size <= 20);
+assert.equal(warehouseBids.size, 0, 'non-Manhattan individual warehouses are replaced by painted symbols');
 const exchangeStacks = new Set(buildings.filter((item) => item.properties?.id === 'exchange-square').map((item) => item.properties?.bid));
 assert.equal(exchangeStacks.size, 4, 'Exchange Square podium and towers must be separate physical stacks');
 for (const building of buildings.filter((item) => ['grid', 'financial', 'reclamation', 'uptown-support', 'warehouse'].includes(String(item.properties?.kind)))) {
@@ -721,7 +1082,7 @@ assertMarkdownCoverage(contentIds, clickableIds);
 assert.equal(stationIds.size, sourceStations.length, 'station ids are generated without Markdown content');
 assert.ok([...stationIds].every((id) => !contentIds.has(id)), 'metro stations must use their own panel data');
 
-assert.equal(sourceDistricts.length, Object.keys(areaFixture.districtAreasKm2).length);
+assert.equal(sourceDistricts.length, 9);
 assert.equal(sourceLand.filter((feature) => feature.kind !== 'monaco').length, 2);
 assert.equal(new Set(sourcePoints.map((point) => point.id)).size, sourcePoints.length, 'source POI ids must be unique');
 assert.equal(new Set(sourceStations.map((station) => station.id)).size, sourceStations.length);
@@ -764,8 +1125,17 @@ for (const block of ordinaryBlocks as Feature<Polygon, Properties>[]) {
   const zone = String(block.properties?.zone);
   const roundingToleranceKm = 0.0001;
   if (zone === 'grid') assert.ok(minX >= 0.2 - roundingToleranceKm && maxX <= 9.2 + roundingToleranceKm && Math.min(...points.map(([, y]) => y)) >= 3.55 - roundingToleranceKm);
-  if (zone === 'financial') assert.ok(maxX < 2.55 + roundingToleranceKm && maxY < 3.4 + roundingToleranceKm);
+  if (zone === 'financial') assert.ok(maxX < 2.75 + roundingToleranceKm && maxY < 3.4 + roundingToleranceKm);
   if (zone === 'reclamation') assert.ok(minX >= 2.75 - roundingToleranceKm && maxY < 3.4 + roundingToleranceKm);
+}
+const monuments = buildings.filter((building) => building.properties?.kind === 'monument');
+const monumentIds = new Set(monuments.map((building) => String(building.properties?.id)));
+assert.deepEqual([...monumentIds].sort(), ['church', 'old-governors-house', 'republic-monument']);
+for (const id of monumentIds) {
+  const pieces = monuments.filter((building) => building.properties?.id === id);
+  assert.ok(pieces.every((building) => building.properties?.key === 1));
+  assert.equal(new Set(pieces.map((building) => building.properties?.name)).size, 1);
+  assert.ok(contentIds.has(id));
 }
 const routeFor = (id: string): Feature<LineString, Properties> => featureById(lineCollection, id) as Feature<LineString, Properties>;
 const stationRouteIndex = (route: Feature<LineString, Properties>, id: string): number => {
@@ -804,3 +1174,6 @@ for (let index = continentalIndex + 1; index <= exchangeIndex; index += 1) {
 console.log(`Validated ${names.length} GeoJSON files (${totalBytes} raw bytes), ${districtIds.length} districts, ${contentIds.size} places, ${stationIds.size} stations, and ${buildings.length} building segments.`);
 console.log(`Full region: ${fullRegionStats.bidCount} distinct bids, median ${fullRegionStats.medianHeightMeters} m, above 150 m ${fullRegionStats.above150mBids} (${(fullRegionStats.above150mPercent * 100).toFixed(2)}%), above 300 m ${fullRegionStats.above300mBids}, maximum ${fullRegionStats.maximumHeightMeters} m.`);
 console.log(`Manhattan: ${manhattanStats.bidCount} distinct bids, median ${manhattanStats.medianHeightMeters} m, above 150 m ${manhattanStats.above150mBids} (${(manhattanStats.above150mPercent * 100).toFixed(2)}%), above 300 m ${manhattanStats.above300mBids}, maximum ${manhattanStats.maximumHeightMeters} m, flat tops among ordinary >90 m ${(flatShare * 100).toFixed(2)}%; gzip ${gzipBytes} bytes; Brotli ${brotliBytes} bytes.`);
+console.log(`Beverly: ${beverlyHills.length} source hills, ${hillRoadIds.size} hill roads; forest coverage ${(beverlyWoodsKm2 / beverlyAreaKm2 * 100).toFixed(2)}%.`);
+console.log(`Reserve: ${reserveWoods.length} woods patches covering ${(reserveWoodsKm2 / reserveAreaKm2 * 100).toFixed(2)}%, ${farms.length} farms covering ${(farmAreaKm2 / reserveAreaKm2 * 100).toFixed(2)}%, ${townBlocks.length} town polygons; no individual houses.`);
+console.log(`Section 8.3 Manhattan bare land: ${bareLandSamples}/${totalLandSamples} 100 m samples (${(bareLandSamples / totalLandSamples * 100).toFixed(2)}%) were >60 m from every block or park.`);

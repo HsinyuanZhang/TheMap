@@ -28,17 +28,35 @@ export function stitchPaths(...paths: readonly (readonly XY[])[]): XY[] {
   return result;
 }
 
-export function curvedBoundary(start: XY, end: XY, amplitude: number, phase: number, count = 6): XY[] {
-  if (count < 4 || count > 8) throw new Error("Internal boundary paths must have 4-8 vertices.");
+export function curvedBoundary(start: XY, end: XY, amplitude: number, phase: number, count?: number): XY[] {
   const dx = end[0] - start[0];
   const dy = end[1] - start[1];
   const length = Math.hypot(dx, dy);
+  count ??= Math.max(6, Math.ceil(length / 0.15));
+  if (length === 0 || !Number.isInteger(count) || count < 2) throw new Error('A boundary needs distinct endpoints and at least two vertices.');
   const nx = -dy / length;
   const ny = dx / length;
   return Array.from({ length: count }, (_, index) => {
     const t = index / (count - 1);
     const offset = amplitude * Math.sin(Math.PI * t) * Math.sin(2 * Math.PI * t + phase);
     return [start[0] + dx * t + nx * offset, start[1] + dy * t + ny * offset] as const;
+  });
+}
+
+export function windingBoundary(start: XY, end: XY, amplitude: number, phase: number, reference?: readonly XY[]): XY[] {
+  const dx = end[0] - start[0], dy = end[1] - start[1], length = Math.hypot(dx, dy);
+  if (!length || !Number.isFinite(amplitude) || !Number.isFinite(phase)) throw new Error('A boundary needs distinct endpoints and finite offsets.');
+  if (reference && (reference.length < 2 || !samePoint(reference[0]!, start) || !samePoint(reference.at(-1)!, end))) throw new Error('Reference boundary endpoints must match.');
+  const count = Math.max(32, Math.ceil(length / 0.12));
+  const weights = Array.from({ length: count }, (_, i) => Math.sin(Math.PI * i / (count - 1)));
+  const offsets = weights.map((w, i) => w * Math.sin(4 * Math.PI * i / (count - 1) + phase));
+  const weight = weights.reduce((sum, v) => sum + v, 0);
+  const mean = offsets.reduce((sum, v) => sum + v, 0) / weight;
+  const referenceArea = reference ? reference.slice(1).reduce((sum, b, i) => sum + reference[i]![0] * b[1] - reference[i]![1] * b[0], 0) - (start[0] * end[1] - start[1] * end[0]) : 0;
+  const bias = -referenceArea * (count - 1) / (2 * length * weight);
+  return offsets.map((v, i) => {
+    const t = i / (count - 1), offset = amplitude * (v - weights[i]! * mean) + weights[i]! * bias;
+    return i === 0 ? start : i === count - 1 ? end : [start[0] + dx * t - dy / length * offset, start[1] + dy * t + dx / length * offset];
   });
 }
 
@@ -57,6 +75,26 @@ export function chaikinOpen(path: readonly XY[], iterations: number): XY[] {
     }
     next.push(result[result.length - 1]!);
     result = next;
+  }
+  return result;
+}
+
+export function smoothSpline(path: readonly XY[], step = 0.025): XY[] {
+  if (path.length < 2) throw new Error('A spline needs at least two points.');
+  if (!Number.isFinite(step) || step <= 0) throw new Error('Spline sampling step must be positive and finite.');
+  const result: XY[] = [path[0]!];
+  for (let index = 0; index < path.length - 1; index += 1) {
+    const b = path[index]!, c = path[index + 1]!;
+    const a = path[index - 1] ?? [2 * b[0] - c[0], 2 * b[1] - c[1]];
+    const d = path[index + 2] ?? [2 * c[0] - b[0], 2 * c[1] - b[1]];
+    const count = Math.max(16, Math.ceil(Math.hypot(c[0] - b[0], c[1] - b[1]) / step));
+    for (let sample = 1; sample <= count; sample += 1) {
+      const t = sample / count, t2 = t * t, t3 = t2 * t;
+      const interpolate = (axis: 0 | 1): number => 0.5 * (2 * b[axis] + (-a[axis] + c[axis]) * t
+        + (2 * a[axis] - 5 * b[axis] + 4 * c[axis] - d[axis]) * t2
+        + (-a[axis] + 3 * b[axis] - 3 * c[axis] + d[axis]) * t3);
+      result.push([interpolate(0), interpolate(1)]);
+    }
   }
   return result;
 }

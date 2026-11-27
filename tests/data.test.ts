@@ -26,20 +26,42 @@ test('the single transit source definition matches Appendix B station order and 
   assert.equal(transitLines.flatMap((route) => route.stations).filter((id) => id === 'station-times-square').length, 2);
 });
 
+test('U1 joins Broadway directly while U2 follows the east-edge reclamation road', () => {
+  const u1 = transitLines.find((line) => line.id === 'U1')!;
+  const u2 = transitLines.find((line) => line.id === 'U2')!;
+  const u1ToTimes = u1.routes?.['station-strait-exchange>station-times-square']!;
+  const u2ToContinental = u2.routes?.['station-strait-exchange>station-continental-tower']!;
+  assert.deepEqual(u1ToTimes.slice(0, 3), [[0.473172, 0.149533], [1.5, 0.75], [2.8, 1.6]]);
+  assert.deepEqual(u2ToContinental.slice(0, 3), u1ToTimes.slice(0, 3));
+  assert.deepEqual(u1ToTimes.slice(2), [[2.8, 1.6], [3.7, 2.5], [4.5, 3.35], [5.908, 5.013]]);
+  assert.deepEqual(u2.routes?.['station-continental-tower>station-exchange-square'], [
+    [4.627522, 1.762421], [5.4, 1.79], [6.4, 1.82], [7.425816, 1.860139],
+  ]);
+  assert.deepEqual(u2.routes?.['station-exchange-square>station-beverly'], [
+    [7.425816, 1.860139], [11, 3.1], [15.3, 2.9], [18.5, 2.75],
+  ]);
+  assert.deepEqual(u2.routes?.['station-beverly>station-beverly-east'], [[18.5, 2.75], [22, 2.75], [26.5, 2.75]]);
+  assert.deepEqual(u1.routes?.['station-st-germain>station-city-hall'], [[8, 13], [7.7, 17], [7.45, 20.75]]);
+  assert.deepEqual(u1.routes?.['station-city-hall>station-hospital'], [[7.45, 20.75], [8, 21], [9.4, 22], [10.55, 22.1]]);
+  assert.ok(!u1ToTimes.some((waypoint) => waypoint[0] === 4.627522 && waypoint[1] === 1.762421));
+});
+
 test('the kilometer source keeps district coverage, named arterial count, and highway connections compact', () => {
-  assert.equal(districts.length, 8);
+  assert.equal(districts.length, 9);
   assert.equal(land.filter((feature) => feature.kind !== 'monaco').length, 2);
   assert.equal(new Set(points.map((point) => point.id)).size, points.length);
   assert.deepEqual(roads.filter((road) => road.roadClass === 'arterial').map((road) => road.id), [
     'fifth-avenue', 'broadway', 'queens-road', 'wall-street', 'promenade',
   ]);
+  assert.deepEqual(roads.find((road) => road.id === 'battery-park-access')?.coordinates, [[-0.8, -1.25], [-0.8, -1.75]]);
   const highwayById = new Map(roads.filter((road) => road.roadClass === 'motorway').map((road) => [road.id, road]));
   assert.deepEqual(highwayById.get('A1')?.coordinates[0], [3.2, 3.4555]);
   assert.deepEqual(highwayById.get('A2')?.coordinates[0], [7.7, 3.465]);
   assert.deepEqual(highwayById.get('A3')?.coordinates[0], [8, 21]);
-  assert.deepEqual(highwayById.get('A3')?.coordinates.at(-1), [36, 4]);
+  assert.deepEqual(highwayById.get('A3')?.coordinates.at(-1), [41, 4]);
   assert.deepEqual(highwayById.get('A1')?.coordinates[4], highwayById.get('A3')?.coordinates[0]);
-  assert.deepEqual(highwayById.get('A2')?.coordinates.at(-2), highwayById.get('A3')?.coordinates.at(-1));
+  assert.deepEqual(highwayById.get('A2')?.coordinates.at(-3), [31, 3]);
+  assert.deepEqual(highwayById.get('A3')?.coordinates.at(-3), [31, 3]);
   assert.deepEqual(points.find((point) => point.id === 'strait-exchange')?.position, [0, 0]);
 });
 

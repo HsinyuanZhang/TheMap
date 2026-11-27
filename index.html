@@ -36,7 +36,13 @@
           <label><input type="checkbox" data-layer-toggle="roads" checked /> 公路</label>
           <label><input type="checkbox" data-layer-toggle="buildings" checked /> 建筑</label>
           <label><input type="checkbox" data-layer-toggle="places" checked /> 地点</label>
+          <label><input id="all-buildings-3d" type="checkbox" /> 全部楼房立体</label>
         </nav>
+
+        <details class="map-legend" aria-label="地图图例">
+          <summary>地图图例</summary>
+          <ul id="map-legend-items"></ul>
+        </details>
 
         <aside id="place-panel" class="place-panel is-open" aria-label="地点介绍" aria-live="polite">
           <div class="panel-grabber" aria-hidden="true"></div>
