@@ -149,7 +149,7 @@ export function createMapStyle(baseUrl: string, datasets: MapDatasets, selectedI
   const layers: LayerSpecification[] = [
     { id: 'ocean', type: 'background', paint: { 'background-color': MAP_PALETTE.water } },
     { id: 'paint-first', type: 'raster', source: 'paint-first', paint: { 'raster-fade-duration': 0 } },
-    { id: 'painted-terrain', type: 'raster', source: 'painted-terrain', paint: { 'raster-fade-duration': 250, 'raster-resampling': 'linear' } },
+    { id: 'painted-terrain', type: 'raster', source: 'painted-terrain', paint: { 'raster-fade-duration': 0, 'raster-resampling': 'linear' } },
     {
       id: 'land-fill', type: 'fill', source: 'land',
       paint: {

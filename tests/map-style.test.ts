@@ -32,6 +32,17 @@ test('Phase 2 style validates against the installed MapLibre style specification
   assert.deepEqual(errors, [], errors.map((error) => error.message).join('\n'));
 });
 
+test('painted terrain and its first-frame fallback do not cross-fade', () => {
+  const style = createMapStyle('/', emptyMapDatasets());
+  for (const id of ['painted-terrain', 'paint-first']) {
+    const layer = style.layers.find((layer) => layer.id === id);
+    assert.ok(layer?.type === 'raster');
+    assert.equal(layer.paint?.['raster-fade-duration'], 0, id);
+    assert.equal(layer.paint?.['raster-opacity'] ?? 1, 1, id);
+    assert.equal(layer.paint?.['raster-opacity-transition'], undefined, id);
+  }
+});
+
 test('style includes local sky, light, generated borders, and all dataset sources', () => {
   const style = createMapStyle('/map/', emptyMapDatasets());
   assert.equal(style.glyphs, '/map/fonts/{fontstack}/{range}.pbf');
